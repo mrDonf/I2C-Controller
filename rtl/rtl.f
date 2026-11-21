@@ -1,0 +1,9 @@
+apb_i2c_pkg.sv
+i2c_sync_fifo.sv
+i2c_in_filter.sv
+i2c_dma_ch.sv
+i2c_bus_mon.sv
+i2c_ctrl.sv
+i2c_tgt.sv
+i2c_regs.sv
+apb_i2c.sv

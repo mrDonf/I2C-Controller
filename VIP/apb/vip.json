@@ -1,0 +1,42 @@
+{
+  "name": "apb",
+  "top": "apb_tb_top",
+  "rtl_flists": ["common/flist/rtl.f", "gpio/flist/rtl.f"],
+  "files": ["VIP/common/vip_common_pkg.sv", "VIP/common/vip_clk_rst_if.sv", "VIP/apb/src/vip_apb_if.sv", "VIP/apb/src/apb_pkg.sv", "VIP/apb/tb/apb_test_pkg.sv", "VIP/apb/tb/apb_tb_top.sv", "VIP/apb/tb/apb_dut_tb_top.sv"],
+  "incdirs": ["VIP/common", "VIP/apb/src"],
+  "timeout_s": 300,
+  "tests": [
+    "apb_smoke_test",
+    {
+      "name": "apb_rand_test",
+      "seeds": 3
+    },
+    {
+      "name": "apb_attr_test",
+      "seeds": 2
+    },
+    "apb_wait_test",
+    "apb_b2b_test",
+    "apb_strobe_test",
+    "apb_error_test",
+    "apb_reset_test",
+    "apb_checker_test",
+    "apb_assert_test",
+    {
+      "name": "apb_dut_test",
+      "top": "apb_dut_tb_top"
+    }
+  ],
+  "variants": {
+    "d16a16": {
+      "defines": ["APB_DATA_W=16", "APB_ADDR_W=16"],
+      "tests": ["apb_smoke_test", "apb_rand_test", "apb_wait_test", "apb_b2b_test", "apb_strobe_test", "apb_error_test", "apb_reset_test", "apb_checker_test", "apb_assert_test", "apb_attr_test"],
+      "note": "16-bit data, 16-bit address"
+    },
+    "d8a16": {
+      "defines": ["APB_DATA_W=8", "APB_ADDR_W=16"],
+      "tests": ["apb_smoke_test", "apb_rand_test", "apb_wait_test", "apb_b2b_test", "apb_strobe_test", "apb_error_test", "apb_reset_test", "apb_checker_test", "apb_assert_test", "apb_attr_test"],
+      "note": "8-bit data (one strobe), 16-bit address (the tests use an address map up to 0x2FFF)"
+    }
+  }
+}

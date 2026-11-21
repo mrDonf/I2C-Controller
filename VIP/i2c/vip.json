@@ -1,0 +1,26 @@
+{
+  "name": "i2c",
+  "top": "i2c_tb_top",
+  "rtl_flists": ["common/flist/rtl.f", "i2c/flist/rtl.f"],
+  "files": [
+    "VIP/common/vip_common_pkg.sv",
+    "VIP/common/vip_clk_rst_if.sv",
+    "VIP/apb/src/vip_apb_if.sv",
+    "VIP/apb/src/apb_pkg.sv",
+    "VIP/i2c/src/vip_i2c_if.sv",
+    "VIP/i2c/src/i2c_pkg.sv",
+    "VIP/i2c/tb/i2c_test_pkg.sv",
+    "VIP/i2c/tb/i2c_tb_top.sv",
+    "VIP/i2c/tb/i2c_dut_tb_top.sv"
+  ],
+  "incdirs": ["VIP/common", "VIP/apb/src", "VIP/i2c/src"],
+  "timeout_s": 600,
+  "tests": [
+    {"name": "i2c_smoke_test", "seeds": 2},
+    "i2c_speeds_test", "i2c_addr10_test", "i2c_nack_test", "i2c_stretch_test", "i2c_multi_test", "i2c_timing_test",
+    {"name": "i2c_dut_wr_rd_test",   "top": "i2c_dut_tb_top"},
+    {"name": "i2c_dut_nack_test",    "top": "i2c_dut_tb_top"},
+    {"name": "i2c_dut_stretch_test", "top": "i2c_dut_tb_top"},
+    {"name": "i2c_dut_timing_test",  "top": "i2c_dut_tb_top"}
+  ]
+}
