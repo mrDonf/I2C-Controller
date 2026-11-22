@@ -41,7 +41,7 @@ class i2c_reg_reset_val_vseq extends i2c_ip_base_vseq;
     chk_rd(R_BUSIDLE,   32'h0000_03E8, '1, "BUSIDLE");
     chk_rd(R_DEVID,     32'(cfg.p.devid_rst), '1, "DEVID");
     chk_rd(R_BUSMON,    32'h0000_0603, '1, "BUSMON");
-    chk_rd(R_PARAM,     32'h0000_0700 | depth, '1, "PARAM");
+    chk_rd(R_PARAM,     32'h0000_0F00 | depth, '1, "PARAM");
     chk_rd(R_VERSION,   cfg.p.version, '1, "VERSION");
   endtask
 endclass : i2c_reg_reset_val_vseq
@@ -56,6 +56,7 @@ class i2c_reset_outputs_vseq extends i2c_ip_base_vseq;
     chk(side.irq === 1'b0 && side.irq_ctrl === 1'b0 && side.irq_tgt === 1'b0 && side.irq_err === 1'b0, "irq_* = 0 after reset");
     chk(side.cs_en === 1'b0 && side.hs_mode === 1'b0, "scl_cs_en_o / hs_mode_o = 0 after reset");
     chk(cfg.dma_cfg.vif.req === 1'b0, "dma_req_o = 0 after reset");
+    chk(cfg.dma_cfg.vif.end_ack === 1'b0, "dma_end_ack_o = 0 after reset");
   endtask
 endclass : i2c_reset_outputs_vseq
 
@@ -301,6 +302,8 @@ class i2c_reg_w1c_w1s_vseq extends i2c_ip_base_vseq;
     chk_rd(R_DMA_CTRL, 32'h0000_0032, '1, "DMA_CTRL SEL = 3, PFC = 1");
     wr(R_DMA_CTRL, 32'h0000_0000, 4'b1110);
     chk_rd(R_DMA_CTRL, 32'h0000_0032, '1, "DMA_CTRL written only through lane 0");
+    wr(R_DMA_CTRL, 32'h0000_002C);                              // END_EN = 1, CLR = 1 (no request: no effect)
+    chk_rd(R_DMA_CTRL, 32'h0000_0024, '1, "DMA_CTRL END_EN = 1, CLR reads 0");
     wr(R_DMA_CTRL, 32'h0);
     // register model front-door + mirror check
     begin

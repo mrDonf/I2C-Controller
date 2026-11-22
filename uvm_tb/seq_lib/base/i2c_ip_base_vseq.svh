@@ -469,7 +469,7 @@ class i2c_ip_base_vseq extends uvm_sequence;
 
   task wait_op(i2c_dma_op o, realtime tmo = 10ms, string what = "");
     bit to = 0;
-    if (!o.done) begin
+    if (!o.done_ev.is_on()) begin                            // triggered after the final handshake (and the end handshake)
       fork begin
         fork
           o.done_ev.wait_trigger();

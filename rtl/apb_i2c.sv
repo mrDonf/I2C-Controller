@@ -2,8 +2,10 @@
 // apb_i2c
 //   APB4 I2C Controller / Target IP - top level.
 //
-//   One DMA channel (dma_req_o / dma_req_type_o / dma_ack_i / dma_ack_type_i),
-//   serving the FIFO selected by DMA_CTRL.SEL: 0 CMD, 1 CRX, 2 TTX, 3 TRX
+//   One DMA channel serving the FIFO selected by DMA_CTRL.SEL (0 CMD, 1 CRX,
+//   2 TTX, 3 TRX): request handshake dma_req_o / dma_req_type_o / dma_ack_i /
+//   dma_ack_type_i and end handshake dma_end_req_i / dma_end_ack_o (the trigger
+//   input / trigger output pair of an Arm DMA-350 channel, spec 3.4).
 //-----------------------------------------------------------------------------
 module apb_i2c
   import apb_i2c_pkg::*;
@@ -11,7 +13,7 @@ module apb_i2c
   parameter int          FIFO_DEPTH = 16,                // 4, 8, 16, 32
   parameter int          APB_AW     = 12,
   parameter logic [23:0] DEVID_RST  = 24'h000000,
-  parameter logic [31:0] VERSION    = 32'h0002_0000
+  parameter logic [31:0] VERSION    = 32'h0002_0100
 ) (
   // APB4
   input  logic              PCLK,
@@ -43,6 +45,9 @@ module apb_i2c
   output logic [1:0]        dma_req_type_o,
   input  logic              dma_ack_i,
   input  logic [1:0]        dma_ack_type_i,
+  // DMA end of operation, DMAC -> IP (4-phase handshake or pulse)
+  input  logic              dma_end_req_i,
+  output logic              dma_end_ack_o,
   // debug / status (registered)
   output logic              debug_bus_busy_o,
   output logic              debug_bus_free_o,
@@ -100,7 +105,7 @@ module apb_i2c
   logic [15:0] idle_val;
   logic [23:0] devid;
   logic        ovrd_en, scl_ovrd, sda_ovrd;
-  logic        dma_en, dma_pfc_cfg;
+  logic        dma_en, dma_pfc_cfg, dma_end_en_cfg, dma_clr;
   logic [1:0]  dma_sel;
   logic [5:0]  dma_blk_cfg;
   logic        core_en;
@@ -145,7 +150,7 @@ module apb_i2c
 
   // DMA
   logic [5:0]  dma_avail, dma_lpos;
-  logic        dma_done, dma_deny;
+  logic        dma_done, dma_deny, dma_end_ev;
   dma_state_t  dma_state;
 
   // misc
@@ -218,6 +223,8 @@ module apb_i2c
     .dma_pfc        (dma_pfc_cfg),
     .dma_sel        (dma_sel),
     .dma_blk        (dma_blk_cfg),
+    .dma_end_en     (dma_end_en_cfg),
+    .dma_clr        (dma_clr),
     .cmd_push       (cmd_push),
     .cmd_wdata      (cmd_wdata),
     .cmd_full       (cmd_full),
@@ -261,6 +268,7 @@ module apb_i2c
     .dma_busy       (dma_state != D_IDLE),
     .dma_done       (dma_done),
     .dma_deny       (dma_deny),
+    .dma_end        (dma_end_ev),
     .intr_stat      (intr_stat),
     .irq_o          (irq_o),
     .irq_ctrl_o     (irq_ctrl_o),
@@ -497,6 +505,8 @@ module apb_i2c
     .rst_n      (PRESETn),
     .en         (dma_en),
     .pfc        (dma_pfc_cfg & dma_sel[0]),                   // RX FIFOs only
+    .end_en     (dma_end_en_cfg),
+    .clr        (dma_clr),
     .blk        ((dma_blk_cfg > DEPTH6) ? DEPTH6 : dma_blk_cfg),
     .avail      (dma_avail),
     .lpos       (dma_lpos),
@@ -504,8 +514,11 @@ module apb_i2c
     .req_type_o (dma_req_type_o),
     .ack_i      (dma_ack_i),
     .ack_type_i (dma_ack_type_i),
+    .end_req_i  (dma_end_req_i),
+    .end_ack_o  (dma_end_ack_o),
     .done       (dma_done),
     .deny       (dma_deny),
+    .end_ev     (dma_end_ev),
     .state      (dma_state)
   );
 

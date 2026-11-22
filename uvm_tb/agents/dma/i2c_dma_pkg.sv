@@ -1,13 +1,17 @@
 // -----------------------------------------------------------------------------
 // i2c_dma_pkg - DMAC agent for the apb_i2c DMA channel (spec 3.4, 4.9, 6.15)
 //
-//   i2c_dma_item     one handshake: req_type, ack_type, number of elements moved, times
+//   i2c_dma_item     one observed event: request handshake (req_type, ack_type), request withdrawn without ack
+//                    (DMA_CTRL.CLR), late ack seen with req = 0, end handshake (4-phase or pulse)
 //   i2c_dma_op       one DMA operation programmed by a test (FIFO, flow control, block size, buffer)
 //   i2c_dmac_driver  reactive DMAC: waits for dma_req, performs the APB element transfers (fixed peripheral address,
 //                    32-bit) through the APB VIP sequencer, answers with ack / ack_type, holds ack until req = 0
 //                    (spec 4.9.3 rules 2-3). Without a running operation (channel stopped) every request is DENYed
-//                    ("request clear", spec 4.9.5).
-//   i2c_dma_monitor  passive: publishes every completed handshake
+//                    ("request clear", spec 4.9.5) - or, with cfg.no_deny (DMAC without DENY), left pending until a
+//                    new operation starts or the IP withdraws it (DMA_CTRL.CLR, spec 4.9.7).
+//                    When an operation ends the DMAC signals it on dma_end_req (spec 4.9.6): cfg.end_mode = END_HS
+//                    (4-phase, like a DMA-350 trigger output), END_PULSE (1-cycle terminal-count pulse) or END_NONE.
+//   i2c_dma_monitor  passive: publishes every observed event
 //   i2c_dma_agent    cfg.active = 0 -> monitor only
 // -----------------------------------------------------------------------------
 `ifndef I2C_DMA_PKG_SV
@@ -24,6 +28,8 @@ package i2c_dma_pkg;
   typedef enum bit [1:0] { DMA_SINGLE = 2'b00, DMA_LAST_SINGLE = 2'b01, DMA_BLOCK = 2'b10, DMA_LAST_BLOCK = 2'b11 } dma_req_e;
   typedef enum bit [1:0] { DMA_OKAY = 2'b00, DMA_DENY = 2'b01, DMA_LAST_OKAY = 2'b10, DMA_ACK_RSVD = 2'b11 } dma_ack_e;
   typedef enum bit [1:0] { SEL_CMD = 2'd0, SEL_CRX = 2'd1, SEL_TTX = 2'd2, SEL_TRX = 2'd3 } dma_sel_e;
+  typedef enum bit [1:0] { END_NONE = 2'd0, END_HS = 2'd1, END_PULSE = 2'd2 } dma_end_mode_e;
+  typedef enum bit [2:0] { DMA_EV_HS, DMA_EV_WITHDRAW, DMA_EV_LATE_ACK, DMA_EV_END_HS, DMA_EV_END_PULSE } dma_ev_e;
 
   // data register of every FIFO (spec 3.4 / 4.9.5)
   function automatic bit [11:0] dma_sel_addr(dma_sel_e s);
@@ -42,12 +48,15 @@ package i2c_dma_pkg;
   // ---------------------------------------------------------------- item
   class i2c_dma_item extends uvm_sequence_item;
     `uvm_object_utils(i2c_dma_item)
+    dma_ev_e     kind = DMA_EV_HS;
     dma_req_e    req_type;
     dma_ack_e    ack_type;
+    bit          req_pending;           // END: dma_req_o was 1 when the end event was sampled
     int unsigned n_elems;
     time         t_req, t_ack;
     function new(string name = "i2c_dma_item"); super.new(name); endfunction
     virtual function string convert2string();
+      if (kind != DMA_EV_HS) return $sformatf("%s req_pending=%0d", kind.name(), req_pending);
       return $sformatf("%s(%s) n=%0d", req_type.name(), ack_type.name(), n_elems);
     endfunction
   endclass : i2c_dma_item
@@ -61,6 +70,12 @@ package i2c_dma_pkg;
     int unsigned lat_max     = 6;
     int unsigned ack_min     = 0;      // extra cycles before ack after the last element
     int unsigned ack_max     = 2;
+    dma_end_mode_e end_mode  = END_HS; // end handshake after every finished operation (DMA-350 trigger output)
+    int unsigned end_lat_min = 0;      // cycles from the final ack handshake to dma_end_req
+    int unsigned end_lat_max = 3;
+    int unsigned end_hold_max = 2;     // END_HS: extra cycles end_req stays 1 after end_ack
+    bit          no_deny     = 0;      // DMAC without DENY: requests of a stopped channel stay pending
+    bit          ack_after_withdraw = 0;   // serve (and late-ack) a request withdrawn while the DMAC arbitrated
     function new(string name = "i2c_dma_cfg"); super.new(name); endfunction
   endclass : i2c_dma_cfg
 
@@ -73,6 +88,8 @@ package i2c_dma_pkg;
     int unsigned   blk;                 // DMAC block size (= DMA_BLK.BLK)
     bit            deny_single;         // DENY SINGLE while >= blk elements remain (spec 4.9.4 example)
     bit            okay_as_rsvd;        // answer OKAY with the reserved code 2'b11 (IP must treat it as OKAY)
+    bit            no_last_okay;        // DMAC without LAST_OKAY: the final ack is OKAY, the end is signalled on
+                                        // dma_end_req only (spec 4.9.6, DMA_CTRL.END_EN = 1)
     bit [31:0]     tx_data[$];          // TX FIFO (CMD/TTX): words written to the IP
     bit [31:0]     rx_data[$];          // RX FIFO (CRX/TRX): words read from the IP
     string         log;                 // "BLOCK SINGLE(D) ..." sequence of requests seen
@@ -100,7 +117,8 @@ package i2c_dma_pkg;
     apb_sequencer apb_sqr;              // set by the env: the DMAC is a second APB requester behind the same bus
     i2c_dma_op    op;                   // current operation (null = channel stopped)
     apb_api_seq   api;
-    int unsigned  n_req, n_deny;
+    int unsigned  n_req, n_deny, n_end, n_withdrawn, n_late_ack;
+    semaphore     end_sem = new(1);
 
     function new(string name, uvm_component parent); super.new(name, parent); endfunction
 
@@ -120,6 +138,7 @@ package i2c_dma_pkg;
     task run_phase(uvm_phase phase);
       cfg.vif.ack      <= 1'b0;
       cfg.vif.ack_type <= 2'b00;
+      cfg.vif.end_req  <= 1'b0;
       api = apb_api_seq::type_id::create("dmac_api");
       fork api.start(apb_sqr); join_none
       forever begin
@@ -131,7 +150,33 @@ package i2c_dma_pkg;
         disable fork;
         cfg.vif.ack      <= 1'b0;
         cfg.vif.ack_type <= 2'b00;
+        cfg.vif.end_req  <= 1'b0;
+        end_sem = new(1);
       end
+    endtask
+
+    // end of a DMA operation on dma_end_req (spec 4.9.6): pulse = 1-cycle terminal-count pulse, else 4-phase
+    task send_end(bit pulse, int unsigned lat = 0);
+      int unsigned k;
+      end_sem.get();
+      repeat (lat) @(cfg.vif.drv_cb);
+      cfg.vif.drv_cb.end_req <= 1'b1;
+      if (pulse) begin
+        @(cfg.vif.drv_cb);
+        cfg.vif.drv_cb.end_req <= 1'b0;
+        @(cfg.vif.drv_cb);
+      end else begin
+        k = 0;
+        do begin @(cfg.vif.drv_cb); k++; end while (cfg.vif.drv_cb.end_ack !== 1'b1 && k < 64);
+        if (k >= 64) `uvm_error("DMAC", "no dma_end_ack_o for dma_end_req_i")
+        repeat ($urandom_range(cfg.end_hold_max, 0)) @(cfg.vif.drv_cb);
+        cfg.vif.drv_cb.end_req <= 1'b0;
+        k = 0;
+        do begin @(cfg.vif.drv_cb); k++; end while (cfg.vif.drv_cb.end_ack !== 1'b0 && k < 64);
+        if (k >= 64) `uvm_error("DMAC", "dma_end_ack_o stuck at 1 after dma_end_req_i = 0")
+      end
+      n_end++;
+      end_sem.put();
     endtask
 
     protected task serve_loop();
@@ -144,7 +189,15 @@ package i2c_dma_pkg;
         rt = dma_req_e'(cfg.vif.drv_cb.req_type);
         n_req++;
         repeat ($urandom_range(cfg.lat_max, cfg.lat_min)) @(cfg.vif.drv_cb);
+        // a request withdrawn (DMA_CTRL.CLR) before the DMAC started to serve it is not served
+        if (cfg.vif.drv_cb.req !== 1'b1 && !cfg.ack_after_withdraw) begin n_withdrawn++; continue; end
         o = op;
+        if (cfg.no_deny) begin
+          // DMAC without DENY: the request of a stopped channel stays pending (new operation or withdrawal)
+          while ((o == null || o.stop || o.done) && cfg.vif.drv_cb.req === 1'b1) begin @(cfg.vif.drv_cb); o = op; end
+          if (cfg.vif.drv_cb.req !== 1'b1 && !cfg.ack_after_withdraw) begin n_withdrawn++; continue; end
+        end
+        if (cfg.vif.drv_cb.req !== 1'b1) n_late_ack++;
         n = 0;
         if (o == null || o.stop || o.done) begin
           at = DMA_DENY;
@@ -160,7 +213,7 @@ package i2c_dma_pkg;
             at = DMA_OKAY;
             if (rt == DMA_LAST_SINGLE || rt == DMA_LAST_BLOCK) o.done = 1;
           end else if (o.remaining() == 0) begin
-            at = DMA_LAST_OKAY;
+            at = o.no_last_okay ? DMA_OKAY : DMA_LAST_OKAY;
             o.done = 1;
           end else begin
             at = DMA_OKAY;
@@ -179,10 +232,11 @@ package i2c_dma_pkg;
         cfg.vif.drv_cb.ack      <= 1'b0;
         cfg.vif.drv_cb.ack_type <= 2'b00;
         @(cfg.vif.drv_cb);
-        if (o != null && o.done) begin
+        if (o != null && o.done && !o.done_ev.is_on()) begin
           `uvm_info("DMAC", $sformatf("operation done: %s (%0d elements)", o.log, o.moved), UVM_MEDIUM)
-          o.done_ev.trigger();
           if (op == o) op = null;
+          if (cfg.end_mode != END_NONE) send_end(cfg.end_mode == END_PULSE, $urandom_range(cfg.end_lat_max, cfg.end_lat_min));
+          o.done_ev.trigger();
         end
       end
     endtask
@@ -217,12 +271,22 @@ package i2c_dma_pkg;
     int unsigned n_hs;
     function new(string name, uvm_component parent); super.new(name, parent); endfunction
     function void build_phase(uvm_phase phase); super.build_phase(phase); ap = new("ap", this); endfunction
+    int unsigned n_withdraw, n_late, n_end;
+
+    function void publish(dma_ev_e k, bit pend = 0);
+      i2c_dma_item e = i2c_dma_item::type_id::create("dma_ev");
+      e.kind = k; e.req_pending = pend; e.t_req = $time;
+      `uvm_info("DMA_MON", e.convert2string(), UVM_HIGH)
+      ap.write(e);
+    endfunction
+
     task run_phase(uvm_phase phase);
       i2c_dma_item it;
-      bit req_p = 0;
+      bit req_p = 0, ack_p = 0, end_p = 0, end_acked = 0, end_pend = 0;
       forever begin
         @(cfg.vif.mon_cb);
-        if (cfg.vif.rst_n !== 1'b1) begin it = null; req_p = 0; continue; end
+        if (cfg.vif.rst_n !== 1'b1) begin it = null; req_p = 0; ack_p = 0; end_p = 0; continue; end
+        // request handshake
         if (cfg.vif.mon_cb.req === 1'b1 && !req_p) begin
           it = i2c_dma_item::type_id::create("dma_hs");
           it.req_type = dma_req_e'(cfg.vif.mon_cb.req_type);
@@ -236,7 +300,25 @@ package i2c_dma_pkg;
           ap.write(it);
           it = null;
         end
+        if (it != null && cfg.vif.mon_cb.req !== 1'b1 && req_p) begin      // dropped without ack: DMA_CTRL.CLR
+          n_withdraw++;
+          publish(DMA_EV_WITHDRAW);
+          it = null;
+        end
+        if (cfg.vif.mon_cb.ack === 1'b1 && !ack_p && cfg.vif.mon_cb.req !== 1'b1) begin
+          n_late++;
+          publish(DMA_EV_LATE_ACK);
+        end
+        // end handshake: published when dma_end_req falls (4-phase if end_ack was seen while end_req = 1)
+        if (cfg.vif.mon_cb.end_req === 1'b1 && !end_p) begin end_acked = 0; end_pend = (cfg.vif.mon_cb.req === 1'b1); end
+        if (cfg.vif.mon_cb.end_req === 1'b1 && cfg.vif.mon_cb.end_ack === 1'b1) end_acked = 1;
+        if (cfg.vif.mon_cb.end_req !== 1'b1 && end_p) begin
+          n_end++;
+          publish(end_acked ? DMA_EV_END_HS : DMA_EV_END_PULSE, end_pend);
+        end
         req_p = (cfg.vif.mon_cb.req === 1'b1);
+        ack_p = (cfg.vif.mon_cb.ack === 1'b1);
+        end_p = (cfg.vif.mon_cb.end_req === 1'b1);
       end
     endtask
   endclass : i2c_dma_monitor

@@ -12,7 +12,7 @@ module i2c_regs
 #(
   parameter int          FIFO_DEPTH = 16,
   parameter logic [23:0] DEVID_RST  = 24'h000000,
-  parameter logic [31:0] VERSION    = 32'h0002_0000
+  parameter logic [31:0] VERSION    = 32'h0002_0100
 ) (
   input  logic             PCLK,
   input  logic             PRESETn,
@@ -70,6 +70,8 @@ module i2c_regs
   output logic             dma_pfc,
   output logic [1:0]       dma_sel,     // 0 CMD, 1 CRX, 2 TTX, 3 TRX
   output logic [5:0]       dma_blk,
+  output logic             dma_end_en,  // DMA_CTRL.END_EN
+  output logic             dma_clr,     // DMA_CTRL.CLR write pulse: withdraw the pending request
   // FIFO access
   output logic             cmd_push,
   output logic [CMD_W-1:0] cmd_wdata,
@@ -117,6 +119,7 @@ module i2c_regs
   input  logic             dma_busy,    // handshake not IDLE
   input  logic             dma_done,
   input  logic             dma_deny,
+  input  logic             dma_end,     // end event from the DMAC (dma_end_req_i)
   output logic [IR_W-1:0]  intr_stat,   // raw INTR_STAT (debug)
   // interrupts
   output logic             irq_o,
@@ -506,17 +509,20 @@ module i2c_regs
   //---------------------------------------------------------------------------
   // DMA_CTRL / DMA_BLK / DMA_STAT (one DMA channel, FIFO selected by SEL)
   //   EN is cleared by HW when the channel completes and, with SEL = CMD, on a
-  //   controller abort (HW clear > SW write). SEL / PFC / BLK writes are
-  //   ignored while EN = 1 or a handshake is in progress.
+  //   controller abort (HW clear > SW write). SEL / PFC / END_EN / BLK writes
+  //   are ignored while EN = 1 or a handshake is in progress. CLR is a write
+  //   command (reads 0).
   //---------------------------------------------------------------------------
   logic       dma_cfg_wr_en;
   logic       wr_dma_ctrl;
   logic       r_dma_en;
   logic       r_dma_pfc;
+  logic       r_dma_end_en;
   logic [1:0] r_dma_sel;
   logic [5:0] r_dma_blk;
   logic       r_dma_done;
   logic       r_dma_deny;
+  logic       r_dma_end;
 
   assign dma_cfg_wr_en = ~r_dma_en & ~dma_busy;
   assign wr_dma_ctrl   = wr_hit[A_DMA_CTRL] & PSTRB[0];
@@ -530,13 +536,17 @@ module i2c_regs
 
   always_ff @(posedge PCLK or negedge PRESETn) begin : p_dma_cfg
     if (!PRESETn) begin
-      r_dma_pfc <= 1'b0;
-      r_dma_sel <= 2'd0;
+      r_dma_pfc    <= 1'b0;
+      r_dma_end_en <= 1'b0;
+      r_dma_sel    <= 2'd0;
     end else if (wr_dma_ctrl && dma_cfg_wr_en) begin
-      r_dma_pfc <= PWDATA[1];
-      r_dma_sel <= PWDATA[5:4];
+      r_dma_pfc    <= PWDATA[1];
+      r_dma_end_en <= PWDATA[2];
+      r_dma_sel    <= PWDATA[5:4];
     end
   end
+
+  assign dma_clr = wr_dma_ctrl & PWDATA[3];
 
   always_ff @(posedge PCLK or negedge PRESETn) begin : p_dma_blk
     if (!PRESETn)                                            r_dma_blk <= 6'd0;
@@ -547,12 +557,15 @@ module i2c_regs
     if (!PRESETn) begin
       r_dma_done <= 1'b0;
       r_dma_deny <= 1'b0;
+      r_dma_end  <= 1'b0;
     end else if (swrst) begin
       r_dma_done <= 1'b0;
       r_dma_deny <= 1'b0;
+      r_dma_end  <= 1'b0;
     end else begin
       r_dma_done <= (r_dma_done & ~(wr_hit[A_DMA_STAT] & wdata_masked[8]))  | dma_done;
       r_dma_deny <= (r_dma_deny & ~(wr_hit[A_DMA_STAT] & wdata_masked[16])) | dma_deny;
+      r_dma_end  <= (r_dma_end  & ~(wr_hit[A_DMA_STAT] & wdata_masked[24])) | dma_end;
     end
   end
 
@@ -599,6 +612,7 @@ module i2c_regs
   assign dma_pfc     = r_dma_pfc;
   assign dma_sel     = r_dma_sel;
   assign dma_blk     = r_dma_blk;
+  assign dma_end_en  = r_dma_end_en;
 
   //---------------------------------------------------------------------------
   // Read data (driven only during a read transfer to limit bus toggling)
@@ -637,10 +651,10 @@ module i2c_regs
         A_BUSIDLE:   PRDATA = {16'd0, r_idle_val};
         A_DEVID:     PRDATA = {8'd0, r_devid};
         A_BUSMON:    PRDATA = {21'd0, r_busmon, 4'd0, mon_sda_oe, mon_scl_oe, mon_sda, mon_scl};
-        A_DMA_CTRL:  PRDATA = {26'd0, r_dma_sel, 2'd0, r_dma_pfc, r_dma_en};
+        A_DMA_CTRL:  PRDATA = {26'd0, r_dma_sel, 1'b0, r_dma_end_en, r_dma_pfc, r_dma_en};
         A_DMA_BLK:   PRDATA = {26'd0, r_dma_blk};
-        A_DMA_STAT:  PRDATA = {15'd0, r_dma_deny, 7'd0, r_dma_done, 7'd0, dma_req};
-        A_PARAM:     PRDATA = {21'd0, 1'b1, 1'b1, 1'b1, 8'(FIFO_DEPTH)};   // DMA, DEVID, HS
+        A_DMA_STAT:  PRDATA = {7'd0, r_dma_end, 7'd0, r_dma_deny, 7'd0, r_dma_done, 6'd0, dma_busy, dma_req};
+        A_PARAM:     PRDATA = {20'd0, 4'b1111, 8'(FIFO_DEPTH)};   // DMA_END, DMA, DEVID, HS
         A_VERSION:   PRDATA = VERSION;
         default:     PRDATA = 32'd0;     // WO / unmapped
       endcase

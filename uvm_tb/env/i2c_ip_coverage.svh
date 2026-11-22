@@ -7,6 +7,8 @@
 //   cg_crx     CRX entries read: LAST
 //   cg_intr    every INTR_STAT bit observed set (4.8)
 //   cg_dma     DMA handshakes: FIFO (SEL) x req_type x ack_type (4.9)
+//   cg_dma_ev  DMA channel events (4.9.6, 4.9.7): end handshake (4-phase / pulse) x DMA_CTRL.END_EN x request pending,
+//              request withdrawn by DMA_CTRL.CLR, late ack
 //   cg_apb     register accesses: offset class x direction x PSLVERR x strobes (3.6, 3.7)
 // -----------------------------------------------------------------------------
 `uvm_analysis_imp_decl(_cov_apb)
@@ -35,6 +37,7 @@ class i2c_ip_coverage extends uvm_component;
   bit              crx_last;
   i2c_dma_item     dh;
   bit [1:0]        dma_sel;
+  bit              dma_end_en;      // DMA_CTRL.END_EN mirrored from the APB writes (written only while unlocked)
   bit [11:0]       off;
   bit              apb_wr, apb_err;
   bit [3:0]        apb_strb;
@@ -122,6 +125,18 @@ class i2c_ip_coverage extends uvm_component;
     }
   endgroup
 
+  covergroup cg_dma_ev;
+    option.per_instance = 1;
+    cp_kind : coverpoint dh.kind;
+    cp_end  : coverpoint dh.kind iff (dh.kind inside {DMA_EV_END_HS, DMA_EV_END_PULSE}) {
+      bins hs = {DMA_EV_END_HS}; bins pulse = {DMA_EV_END_PULSE};
+    }
+    cp_end_en : coverpoint dma_end_en iff (dh.kind inside {DMA_EV_END_HS, DMA_EV_END_PULSE});
+    cp_pend   : coverpoint dh.req_pending iff (dh.kind inside {DMA_EV_END_HS, DMA_EV_END_PULSE});
+    x_end : cross cp_end, cp_end_en;
+    x_end_pend : cross cp_end_en, cp_pend;
+  endgroup
+
   covergroup cg_apb;
     option.per_instance = 1;
     cp_off : coverpoint off {
@@ -152,7 +167,7 @@ class i2c_ip_coverage extends uvm_component;
   function new(string name, uvm_component parent);
     super.new(name, parent);
     cg_cmd = new(); cg_ctrl = new(); cg_tgt = new(); cg_trx = new(); cg_crx = new();
-    cg_intr = new(); cg_dma = new(); cg_apb = new(); cg_depth = new();
+    cg_intr = new(); cg_dma = new(); cg_dma_ev = new(); cg_apb = new(); cg_depth = new();
   endfunction
 
   function void build_phase(uvm_phase phase);
@@ -172,6 +187,7 @@ class i2c_ip_coverage extends uvm_component;
     off = t.addr[11:0] & 12'hFFC; apb_wr = t.write; apb_err = t.slverr; apb_strb = t.strb;
     cg_apb.sample();
     if (t.slverr) return;
+    if (t.write && off == R_DMA_CTRL && t.strb[0] && side_vif.d_dma_state == 0) dma_end_en = t.data[2];
     if (t.write && off == R_CMD && t.strb != 0) begin cmd = t.strobed_data(); cg_cmd.sample(); end
     if (!t.write && off == R_TRXDATA) begin trx_tag = t.data[9:8]; cg_trx.sample(); end
     if (!t.write && off == R_CRXDATA) begin crx_last = t.data[8]; cg_crx.sample(); end
@@ -195,6 +211,7 @@ class i2c_ip_coverage extends uvm_component;
   function void write_cov_dma(i2c_dma_item t);
     dh = t;
     dma_sel = side_vif.d_dma_sel;
-    cg_dma.sample();
+    if (t.kind == DMA_EV_HS) cg_dma.sample();
+    cg_dma_ev.sample();
   endfunction
 endclass : i2c_ip_coverage

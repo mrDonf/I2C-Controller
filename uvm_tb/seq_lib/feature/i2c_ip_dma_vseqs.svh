@@ -313,7 +313,8 @@ class i2c_dma_abort_vseq extends i2c_ip_dma_base_vseq;
 endclass : i2c_dma_abort_vseq
 
 // ---------------------------------------------------------------- VP-DMA-10 (random): random DMA operations
-//   CMD write (DMAC flow control), CRX read (PFC), TRX receive (PFC), TTX transmit; random lengths / block sizes.
+//   CMD write (DMAC flow control), CRX read (PFC), TRX receive (PFC), TTX transmit; random lengths / block sizes;
+//   random end signalling of the DMAC (4-phase end handshake, terminal-count pulse, none) with END_EN = 0.
 //   The data is checked against the VIP slave memory / the external controller; the request sequence by the SVA.
 class i2c_dma_rand_vseq extends i2c_ip_dma_base_vseq;
   `uvm_object_utils(i2c_dma_rand_vseq)
@@ -330,6 +331,7 @@ class i2c_dma_rand_vseq extends i2c_ip_dma_base_vseq;
       bit [7:0] d[$], q[$];
       bit [31:0] tx[$];
       bit ok;
+      cfg.dma_cfg.end_mode = dma_end_mode_e'($urandom_range(2));
       case (kind)
         0: begin                                              // CMD: S A W ptr d.. P through DMA
           int unsigned n = $urandom_range(1, 2 * depth);
@@ -384,6 +386,8 @@ class i2c_dma_rand_vseq extends i2c_ip_dma_base_vseq;
       endcase
       w1c(EVENT_MASK);
     end
+    cfg.dma_cfg.end_mode = END_HS;
+    wr(R_DMA_STAT, 32'h0101_0100);
     wr(R_DMA_CTRL, 32'h0);
   endtask
 endclass : i2c_dma_rand_vseq
@@ -431,3 +435,252 @@ class i2c_dma_pfc_late_vseq extends i2c_ip_dma_base_vseq;
                                $sformatf("late PFC word %0d = %03h", i, o.rx_data[i]));
   endtask
 endclass : i2c_dma_pfc_late_vseq
+
+// ---------------------------------------------------------------- VP-DMA-12: end handshake from the DMAC (4.9.6, 5.2.22, 5.2.24)
+//   dma_end_req_i / dma_end_ack_o (DMA-350 trigger output): acknowledged one cycle later (SVA_DMA_END_ACK), always
+//   recorded in DMA_STAT.END, completes the channel only with DMA_CTRL.END_EN = 1 and EN = 1, never withdraws a request
+class i2c_dma_end_vseq extends i2c_ip_dma_base_vseq;
+  `uvm_object_utils(i2c_dma_end_vseq)
+  function new(string name = "i2c_dma_end_vseq"); super.new(name); endfunction
+
+  // DMA_DONE events since the start of the test (sideband event counter)
+  function int unsigned n_done();
+    return p_sequencer.side.ev_cnt[I_DMA_DONE];
+  endfunction
+
+  task main();
+    i2c_dma_op o;
+    bit [7:0] d[$];
+    int unsigned ne, nd;
+    int unsigned blk = (depth >= 8) ? 4 : 2;
+
+    // (a) DMAC reporting its last transfer with LAST_OKAY (DMA-350), END_EN = 0: the 4-phase end handshake that
+    //     follows is acknowledged and only recorded in DMA_STAT.END - one DMA_DONE per operation
+    cfg.dma_cfg.end_mode = END_HS;
+    cfg.dma_cfg.end_lat_min = 400; cfg.dma_cfg.end_lat_max = 400;
+    ne = p_sequencer.dmac.n_end;
+    rnd_bytes(3, d);
+    dma_start(SEL_CMD, 0, 5, blk, o, '{c_start(7'h50, 0), c_wr(8'hA0), c_wr(d[0]), c_wr(d[1]), c_wr(d[2], 1)});
+    chk_dma_done("END_EN=0, LAST_OKAY");                      // completed by LAST_OKAY; DONE / DMA_DONE cleared
+    chk_rd(R_DMA_STAT, 0, 32'h0100_0000, "END_EN=0: no end event yet");
+    nd = n_done();
+    wait_op(o, 2ms, "END_EN=0");                              // end handshake finished
+    chk(p_sequencer.dmac.n_end == ne + 1, "END_EN=0: end handshake acknowledged");
+    chk_rd(R_DMA_STAT, 32'h0100_0000, 32'h0101_0103, "END_EN=0: DMA_STAT.END set, no new DONE, channel idle");
+    chk(n_done() == nd, "END_EN=0: the end event creates no DMA_DONE");
+    chk_ev(I_DMA_DONE, 0, "END_EN=0:");
+    wr(R_DMA_STAT, 32'h0100_0000);
+    chk_rd(R_DMA_STAT, 0, 32'h0100_0000, "DMA_STAT.END W1C");
+    wait_cmpl(0, "END_EN=0 write");
+    foreach (d[i]) chk(slv_mem(0, 8'hA0 + i) == d[i], "END_EN=0 data");
+    // END_EN = 0 with the channel still enabled and a request pending (DMAC without DENY, stopped): end events
+    // (4-phase, pulse) are only recorded - EN stays 1, the request stays pending until CLR
+    cfg.dma_cfg.no_deny = 1;
+    p_sequencer.dmac.stop_op();
+    nd = n_done();
+    wr(R_DMA_CTRL, 32'h21);                                   // SEL = TTX (empty): request, EN, END_EN = 0
+    wait (cfg.dma_cfg.vif.req === 1'b1);
+    p_sequencer.dmac.send_end(0);
+    p_sequencer.dmac.send_end(1, 2);
+    chk_rd(R_DMA_CTRL, 32'h21, '1, "END_EN=0: EN kept after end events");
+    chk_rd(R_DMA_STAT, 32'h0100_0003, 32'h0101_0103, "END_EN=0: END recorded, no DONE, request still pending");
+    chk(n_done() == nd, "END_EN=0, EN=1: no DMA_DONE");
+    wr(R_DMA_CTRL, 32'h08);                                   // CLR, EN = 0
+    wait_cycles(4);
+    chk_rd(R_DMA_STAT, 32'h0100_0000, 32'h0100_0003, "request withdrawn");
+    wr(R_DMA_STAT, 32'h0100_0000);
+    cfg.dma_cfg.no_deny = 0;
+
+    // (b) DMAC without LAST_OKAY (DMAC flow control, every ack OKAY), END_EN = 1, terminal-count pulse: the final
+    //     OKAY does not complete the channel, the end pulse does (EN cleared, DONE, DMA_DONE, END)
+    cfg.dma_cfg.end_mode = END_PULSE;
+    nd = n_done();
+    rnd_bytes(3, d);
+    o = mk_op(SEL_CMD, 0, 5, blk);
+    o.tx_data = '{c_start(7'h50, 0), c_wr(8'hB0), c_wr(d[0]), c_wr(d[1]), c_wr(d[2], 1)};
+    o.no_last_okay = 1;
+    p_sequencer.dmac.start_op(o);
+    wr(R_DMA_BLK, blk);
+    wr(R_DMA_CTRL, 32'h05);                                   // SEL = CMD, END_EN, EN
+    wait (o.done);
+    wait_cycles(40);                                          // final handshake over, end pulse ~400 cycles later
+    chk(o.ack_log[o.ack_log.size() - 1] == DMA_OKAY, "final ack OKAY (DMAC without LAST_OKAY)");
+    chk_rd(R_DMA_CTRL, 32'h05, '1, "END_EN=1: channel still enabled after the final OKAY");
+    chk_rd(R_DMA_STAT, 0, 32'h0100_0100, "END_EN=1: no DONE / END before the end event");
+    chk(n_done() == nd, "END_EN=1: no DMA_DONE before the end event");
+    wait_op(o, 2ms, "END_EN=1 pulse");
+    wait_ev(I_DMA_DONE, 1ms, 1, "END_EN=1 end pulse");
+    chk(n_done() == nd + 1, "END_EN=1: exactly one DMA_DONE");
+    chk_rd(R_DMA_STAT, 32'h0100_0100, 32'h0100_0100, "END_EN=1: DONE and END");
+    chk_rd(R_DMA_CTRL, 32'h04, '1, "END_EN=1: EN cleared by the end event, END_EN kept");
+    wait (cfg.dma_cfg.vif.req === 1'b0);                      // a request issued after the final OKAY: DENY (stopped DMAC)
+    wait_cycles(4);
+    chk_rd(R_DMA_STAT, 0, 32'h3, "END_EN=1: channel idle");
+    wr(R_DMA_STAT, 32'h0101_0100);
+    wait_cmpl(0, "END_EN=1 write");
+    foreach (d[i]) chk(slv_mem(0, 8'hB0 + i) == d[i], "END_EN=1 data");
+
+    // (c) end event while a request is pending (DMAC without DENY, END_EN = 1, 4-phase end): the channel completes,
+    //     the request stays pending (the IP never withdraws it) until SW withdraws it with DMA_CTRL.CLR (4.9.7)
+    cfg.dma_cfg.end_mode = END_HS;
+    cfg.dma_cfg.end_lat_min = 2; cfg.dma_cfg.end_lat_max = 3;
+    cfg.dma_cfg.no_deny = 1;
+    nd = n_done();
+    o = mk_op(SEL_TTX, 0, 2, 0);
+    o.tx_data = '{32'h5A, 32'hA5};
+    o.no_last_okay = 1;
+    p_sequencer.dmac.start_op(o);
+    wr(R_DMA_BLK, 0);
+    wr(R_DMA_CTRL, 32'h25);                                   // SEL = TTX, END_EN, EN: SINGLE, SINGLE, SINGLE (pending)
+    wait_op(o, 2ms, "end with a pending request");
+    wait_ev(I_DMA_DONE, 1ms, 1, "end with a pending request");
+    chk(n_done() == nd + 1, "pending request: one DMA_DONE");
+    chk_rd(R_DMA_STAT, 32'h0100_0103, 32'h0101_0103, "DONE, END; the request issued before the end is still pending");
+    chk_rd(R_DMA_CTRL, 32'h24, '1, "EN cleared by the end event");
+    wait_cycles(200);
+    chk(cfg.dma_cfg.vif.req === 1'b1, "request kept: the IP never withdraws it by itself");
+    wr(R_DMA_CTRL, 32'h08);                                   // DMA_CTRL.CLR
+    wait_cycles(1);
+    chk(cfg.dma_cfg.vif.req === 1'b0, "request withdrawn by CLR");
+    chk_rd(R_DMA_STAT, 32'h0100_0100, 32'h0101_0103, "CLR: REQ = 0, BUSY = 0, no DENY, DONE kept");
+    chk_rd(R_FIFO_STAT, 2 << 16, 32'h3F << 16, "TTX holds the 2 bytes moved by the DMAC");
+    wr(R_CTRL, 32'h0000_0403);                                // TTX_FLUSH
+    wr(R_DMA_STAT, 32'h0101_0100);
+    cfg.dma_cfg.no_deny = 0;
+
+    // (d) END_EN = 1 but EN = 0: end events (pulse and 4-phase) are only recorded
+    nd = n_done();
+    p_sequencer.dmac.send_end(1);
+    p_sequencer.dmac.send_end(0, 2);
+    chk_rd(R_DMA_STAT, 32'h0100_0000, 32'h0100_0100, "EN = 0: END recorded, no DONE");
+    chk(n_done() == nd, "EN = 0: no DMA_DONE");
+    wr(R_DMA_STAT, 32'h0100_0000);
+
+    // (e) END_EN locked while EN = 1; an end event on an enabled channel without any request completes it
+    wr(R_DMA_CTRL, 32'h15);                                   // SEL = CRX (empty: no request), END_EN, EN
+    wr(R_DMA_CTRL, 32'h11);                                   // END_EN = 0 ignored while EN = 1
+    chk_rd(R_DMA_CTRL, 32'h15, '1, "END_EN locked while EN = 1");
+    nd = n_done();
+    p_sequencer.dmac.send_end(0);
+    wait_ev(I_DMA_DONE, 100us, 1, "end event on an idle enabled channel");
+    chk(n_done() == nd + 1, "one DMA_DONE");
+    chk_rd(R_DMA_CTRL, 32'h14, '1, "EN cleared, END_EN kept");
+    chk_rd(R_DMA_STAT, 32'h0100_0100, 32'h0100_0103, "DONE, END");
+    wr(R_DMA_STAT, 32'h0101_0100);
+    wr(R_DMA_CTRL, 32'h0);
+    chk_rd(R_DMA_CTRL, 0, '1, "END_EN writable again");
+    cfg.dma_cfg.end_lat_min = 0; cfg.dma_cfg.end_lat_max = 3;
+  endtask
+endclass : i2c_dma_end_vseq
+
+// ---------------------------------------------------------------- VP-DMA-13: request withdrawn by SW, DMAC without DENY (4.9.7)
+class i2c_dma_clr_vseq extends i2c_ip_dma_base_vseq;
+  `uvm_object_utils(i2c_dma_clr_vseq)
+  function new(string name = "i2c_dma_clr_vseq"); super.new(name); endfunction
+
+  function int unsigned n_done();
+    return p_sequencer.side.ev_cnt[I_DMA_DONE];
+  endfunction
+
+  task main();
+    i2c_dma_op o;
+    int unsigned nd, nl;
+    int unsigned blk = (depth >= 8) ? 4 : 2;
+
+    // (a) DMAC without DENY, channel stopped: the request stays pending; configuration locked; CLR withdraws it
+    cfg.dma_cfg.no_deny = 1;
+    p_sequencer.dmac.stop_op();
+    wr(R_DMA_BLK, blk);
+    wr(R_DMA_CTRL, 32'h21);                                   // SEL = TTX (empty) -> BLOCK request
+    wait (cfg.dma_cfg.vif.req === 1'b1);
+    wait_cycles(300);
+    chk(cfg.dma_cfg.vif.req === 1'b1 && cfg.dma_cfg.vif.req_type == DMA_BLOCK, "BLOCK request pending (no DENY)");
+    chk_rd(R_DMA_STAT, 32'h3, 32'h0101_0103, "REQ = 1, BUSY = 1, no DENY");
+    wr(R_DMA_CTRL, 32'h16);                                   // EN = 0; SEL / PFC / END_EN locked (BUSY)
+    chk_rd(R_DMA_CTRL, 32'h20, '1, "SEL / PFC / END_EN locked while the request is pending");
+    wr(R_DMA_CTRL, 32'h08);                                   // CLR
+    wait_cycles(1);
+    chk(cfg.dma_cfg.vif.req === 1'b0, "request withdrawn the cycle after the CLR write");
+    chk_rd(R_DMA_STAT, 0, 32'h0101_0103, "CLR: REQ = 0, BUSY = 0, no DONE / DENY");
+    chk_rd(R_DMA_CTRL, 32'h20, '1, "CLR reads 0");
+    wr(R_DMA_CTRL, 32'h16);
+    chk_rd(R_DMA_CTRL, 32'h16, '1, "configuration writable after the withdrawal");
+    wr(R_DMA_CTRL, 32'h0);
+
+    // (b) CLR without a pending request: no effect
+    wr(R_DMA_CTRL, 32'h08);
+    wait_cycles(5);
+    chk(cfg.dma_cfg.vif.req === 1'b0, "CLR in IDLE: no request");
+    chk_rd(R_DMA_STAT, 0, '1, "CLR in IDLE: DMA_STAT unchanged");
+
+    // (c) CLR with EN kept at 1: withdrawn, then issued again once the handshake is back in IDLE
+    wr(R_DMA_CTRL, 32'h21);
+    wait (cfg.dma_cfg.vif.req === 1'b1);
+    wait_cycles(10);
+    wr(R_DMA_CTRL, 32'h29);                                   // CLR, EN = 1
+    wait_cycles(1);
+    chk(cfg.dma_cfg.vif.req === 1'b0, "withdrawn with EN = 1");
+    wait_cycles(6);
+    chk(cfg.dma_cfg.vif.req === 1'b1, "request issued again (EN = 1)");
+    wr(R_DMA_CTRL, 32'h08);                                   // CLR, EN = 0
+    wait_cycles(4);
+    chk_rd(R_DMA_STAT, 0, 32'h3, "withdrawn again, channel idle");
+    cfg.dma_cfg.no_deny = 0;
+
+    // (d) DMAC already serving when the request is withdrawn (4.9.7, SW condition violated): the elements moved by
+    //     the DMAC reach the FIFO, the late ack (LAST_OKAY) is ignored - no DONE / DMA_DONE, channel back to IDLE
+    cfg.dma_cfg.ack_after_withdraw = 1;
+    cfg.dma_cfg.end_mode = END_NONE;
+    cfg.dma_cfg.lat_min = 60; cfg.dma_cfg.lat_max = 60;
+    nd = n_done();
+    nl = p_sequencer.dmac.n_late_ack;
+    o = mk_op(SEL_TTX, 0, blk, blk);
+    for (int i = 0; i < blk; i++) o.tx_data.push_back(32'h30 + i);
+    p_sequencer.dmac.start_op(o);
+    wr(R_DMA_CTRL, 32'h21);                                   // BLOCK request
+    wait (cfg.dma_cfg.vif.req === 1'b1);
+    wait_cycles(5);
+    wr(R_DMA_CTRL, 32'h08);                                   // withdrawn while the DMAC arbitrates
+    fork
+      begin                                                   // late ack seen in IDLE: the handshake waits in ACK
+        @(posedge side.clk iff (cfg.dma_cfg.vif.ack === 1'b1 && cfg.dma_cfg.vif.req === 1'b0));
+        repeat (2) @(posedge side.clk);                       // debug_dma_state_o is registered
+        chk(side.d_dma_state == 2, "late ack in IDLE: handshake waits for ack = 0 in ACK (debug_dma_state_o = 2)");
+      end
+    join_none
+    wait_op(o, 1ms, "late ack");
+    wait_cycles(6);
+    chk(p_sequencer.dmac.n_late_ack == nl + 1, "the DMAC acknowledged after the withdrawal");
+    chk(n_done() == nd, "late LAST_OKAY not processed: no DMA_DONE");
+    chk_rd(R_DMA_STAT, 0, 32'h0101_0103, "late ack ignored: no DONE / DENY, channel idle");
+    chk_rd(R_FIFO_STAT, blk << 16, 32'h3F << 16, "elements moved by the DMAC are in TTX");
+    wr(R_CTRL, 32'h0000_0403);                                // TTX_FLUSH
+
+    // (e) ack sampled in the same cycle as the CLR write: the ack wins (handshake completes, ack_type processed)
+    cfg.dma_cfg.ack_after_withdraw = 0;
+    cfg.dma_cfg.lat_min = 200; cfg.dma_cfg.lat_max = 200;     // the DMAC model stays in its arbitration delay
+    p_sequencer.dmac.stop_op();
+    wr(R_DMA_CTRL, 32'h21);
+    wait (cfg.dma_cfg.vif.req === 1'b1);
+    fork
+      wr(R_DMA_CTRL, 32'h08);
+      begin                                                   // ack = 1 (DENY) during the access phase of that write
+        do @(posedge side.clk);
+        while (!(cfg.apb_cfg.vif.psel === 1'b1 && cfg.apb_cfg.vif.penable === 1'b0 && cfg.apb_cfg.vif.pwrite === 1'b1 &&
+                 cfg.apb_cfg.vif.paddr[11:0] == R_DMA_CTRL));
+        cfg.dma_cfg.vif.ack <= 1'b1;
+        cfg.dma_cfg.vif.ack_type <= DMA_DENY;
+        do @(posedge side.clk); while (cfg.dma_cfg.vif.req !== 1'b0);
+        cfg.dma_cfg.vif.ack <= 1'b0;
+        cfg.dma_cfg.vif.ack_type <= 2'b00;
+      end
+    join
+    wait_cycles(4);
+    chk_rd(R_DMA_STAT, 32'h0001_0000, 32'h0001_0103, "ack and CLR in the same cycle: the ack wins (DENY processed)");
+    wait_cycles(250);                                         // the DMAC model leaves its delay (request gone: no ack)
+    wr(R_DMA_STAT, 32'h0101_0100);
+    wr(R_DMA_CTRL, 32'h0);
+    cfg.dma_cfg.lat_min = 2; cfg.dma_cfg.lat_max = 6;
+    cfg.dma_cfg.end_mode = END_HS;
+  endtask
+endclass : i2c_dma_clr_vseq

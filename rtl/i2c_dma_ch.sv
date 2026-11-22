@@ -1,23 +1,31 @@
 //-----------------------------------------------------------------------------
 // i2c_dma_ch
-//   One DMA channel, 4-phase request/acknowledge handshake with qualifiers
-//   (spec 3.4, 4.9):
+//   One DMA channel (spec 3.4, 4.9). Two 4-phase handshakes:
 //
+//   Request (= Arm DMA-350 trigger input), the IP is the requester:
 //     peripheral -> DMAC : req,  req_type[1:0]
 //     DMAC -> peripheral : ack,  ack_type[1:0]
 //
 //     req_type : 00 SINGLE, 01 LAST_SINGLE, 10 BLOCK, 11 LAST_BLOCK
 //     ack_type : 00 OKAY,   01 DENY,        10 LAST_OKAY, 11 reserved (= OKAY)
 //
-//   Handshake: req=1 (req_type stable) -> ack=1 (ack_type valid, all data
-//   transfers of the request completed) -> req=0 -> ack=0 -> next request.
-//   Once asserted, req is held until ack (it is never withdrawn).
+//     req=1 (req_type stable) -> ack=1 (ack_type valid, all data transfers of
+//     the request completed) -> req=0 -> ack=0 -> next request.
+//     The IP never withdraws a request by itself; only the SW command clr
+//     (DMA_CTRL.CLR, spec 4.9.7) drops a pending request without ack. A late
+//     ack seen in IDLE is waited out in ACK without processing ack_type.
 //
-//   avail : RX channel = entries in FIFO, TX channel = free entries.
-//   lpos  : RX channel, 1-based position of the first LAST-marked entry
-//           (0 = none). Tie to 0 for TX channels.
-//   blk   : block size (0 = no BLOCK requests), <= FIFO depth.
-//   pfc   : peripheral flow control (RX channels only, else tie to 0).
+//   End (= DMA-350 trigger output), the DMAC is the requester (spec 4.9.6):
+//     DMAC -> peripheral : end_req      peripheral -> DMAC : end_ack
+//     end_ack = end_req delayed one cycle; every 0 -> 1 of end_req (sampled
+//     with end_ack = 0) is one end event. A 1-cycle pulse is also accepted.
+//
+//   avail  : RX channel = entries in FIFO, TX channel = free entries.
+//   lpos   : RX channel, 1-based position of the first LAST-marked entry
+//            (0 = none). Tie to 0 for TX channels.
+//   blk    : block size (0 = no BLOCK requests), <= FIFO depth.
+//   pfc    : peripheral flow control (RX channels only, else tie to 0).
+//   end_en : an end event completes the channel (while en = 1).
 //-----------------------------------------------------------------------------
 module i2c_dma_ch
   import apb_i2c_pkg::*;
@@ -26,23 +34,30 @@ module i2c_dma_ch
   input  logic       rst_n,
   input  logic       en,
   input  logic       pfc,
+  input  logic       end_en,
+  input  logic       clr,        // SW command: withdraw a pending request
   input  logic [5:0] blk,
   input  logic [5:0] avail,
   input  logic [5:0] lpos,
-  // handshake
+  // request handshake
   output logic       req_o,
   output logic [1:0] req_type_o,
   input  logic       ack_i,
   input  logic [1:0] ack_type_i,
+  // end handshake
+  input  logic       end_req_i,
+  output logic       end_ack_o,
   // status
   output logic       done,       // 1-cycle pulse: DMA operation finished
   output logic       deny,       // 1-cycle pulse: request denied
+  output logic       end_ev,     // 1-cycle pulse: end event from the DMAC
   output dma_state_t state       // 0 IDLE, 1 REQ, 2 ACK
 );
 
   dma_state_t r_state;            // state[0] is the request flop itself
   logic [1:0] r_req_type;
   logic [5:0] r_deny_avail;       // avail when the last DENY was received, 0 = none
+  logic       r_end_ack;
 
   //---------------------------------------------------------------------------
   // Request type selection (spec 4.9.2)
@@ -74,16 +89,17 @@ module i2c_dma_ch
   end
 
   //---------------------------------------------------------------------------
-  // Handshake decisions (spec 4.9.3)
+  // Handshake decisions (spec 4.9.3, 4.9.7)
   //   After a DENY no new request until avail changes. A request always needs
   //   avail >= 1, so r_deny_avail = 0 safely encodes "not blocked".
+  //   A sampled ack has priority over clr in the same cycle.
   //---------------------------------------------------------------------------
   logic blocked;
   logic issue;        // IDLE -> REQ
-  logic ack_seen;     // REQ  -> ACK
+  logic ack_seen;     // REQ  -> ACK, ack_type processed
 
   assign blocked  = (avail == r_deny_avail);
-  assign issue    = (r_state == D_IDLE) & en & want & ~blocked;
+  assign issue    = (r_state == D_IDLE) & ~ack_i & en & want & ~blocked;
   assign ack_seen = (r_state == D_REQ) & ack_i;
 
   //---------------------------------------------------------------------------
@@ -92,11 +108,16 @@ module i2c_dma_ch
   dma_state_t state_nxt;
 
   always_comb begin : p_state_nxt
+    state_nxt = r_state;
     unique case (r_state)
-      D_IDLE:  state_nxt = issue ? D_REQ  : D_IDLE;
-      D_REQ:   state_nxt = ack_i ? D_ACK  : D_REQ;
-      D_ACK:   state_nxt = ack_i ? D_ACK  : D_IDLE;
-      default: state_nxt = D_IDLE;
+      D_IDLE:
+        if (ack_i)              state_nxt = D_ACK;      // late ack of a withdrawn request
+        else if (issue)         state_nxt = D_REQ;
+      D_REQ:
+        if (ack_i || clr)       state_nxt = D_ACK;      // acknowledged, or withdrawn by SW
+      D_ACK:
+        if (!ack_i)             state_nxt = D_IDLE;
+      default:                  state_nxt = D_IDLE;
     endcase
   end
 
@@ -120,13 +141,26 @@ module i2c_dma_ch
   end
 
   //---------------------------------------------------------------------------
+  // End handshake (spec 4.9.6): acknowledged immediately, never stalls the DMAC
+  //---------------------------------------------------------------------------
+  always_ff @(posedge clk or negedge rst_n) begin : p_end_ack
+    if (!rst_n) r_end_ack <= 1'b0;
+    else        r_end_ack <= end_req_i;
+  end
+
+  //---------------------------------------------------------------------------
   // Outputs
   //---------------------------------------------------------------------------
-  assign deny       = ack_seen & (ack_type_i == AT_DENY);
-  assign done       = ack_seen & (ack_type_i != AT_DENY) &
+  logic ack_done;     // completion reported on the request handshake
+
+  assign ack_done   = ack_seen & (ack_type_i != AT_DENY) &
                       (r_req_type[0] | (ack_type_i == AT_LAST_OKAY));
+  assign end_ev     = end_req_i & ~r_end_ack;
+  assign deny       = ack_seen & (ack_type_i == AT_DENY);
+  assign done       = ack_done | (end_ev & end_en & en);
   assign req_o      = r_state[0];
   assign req_type_o = r_req_type;
+  assign end_ack_o  = r_end_ack;
   assign state      = r_state;
 
 endmodule

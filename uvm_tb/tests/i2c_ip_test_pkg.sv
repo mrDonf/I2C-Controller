@@ -118,6 +118,8 @@ package i2c_ip_test_pkg;
   `include "dma/i2c_dma_abort_test.svh"
   `include "dma/i2c_dma_rand_test.svh"
   `include "dma/i2c_dma_pfc_late_test.svh"
+  `include "dma/i2c_dma_end_test.svh"
+  `include "dma/i2c_dma_clr_test.svh"
 
   // random
   `include "rand/i2c_rand_test.svh"

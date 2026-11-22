@@ -53,7 +53,7 @@ package i2c_ip_ral_pkg;
 
     int unsigned fifo_depth = 16;
     bit [23:0]   devid_rst  = 24'h0;
-    bit [31:0]   version    = 32'h0002_0000;
+    bit [31:0]   version    = 32'h0002_0100;
 
     rand i2c_ip_reg CTRL, STATUS, INTR_STAT, INTR_EN, INTR_TEST, FIFO_CTRL, FIFO_STAT, CMD, CRXDATA, TTXDATA, TRXDATA;
     rand i2c_ip_reg TADDR, TCFG, HSCFG, CSTAT, TSTAT;
@@ -158,13 +158,16 @@ package i2c_ip_ral_pkg;
       f = BUSMON.add("OVRD_EN", 8, 1, "RW", 0);    f = BUSMON.add("SCL_OVRD", 9, 1, "RW", 1);
       f = BUSMON.add("SDA_OVRD", 10, 1, "RW", 1);
       DMA_CTRL = mk("DMA_CTRL", 'h074, 0, 1);
-      f = DMA_CTRL.add("EN", 0, 1, "RW", 0, 1); f = DMA_CTRL.add("PFC", 1, 1, "RW", 0); f = DMA_CTRL.add("SEL", 4, 2, "RW", 0);
+      f = DMA_CTRL.add("EN", 0, 1, "RW", 0, 1); f = DMA_CTRL.add("PFC", 1, 1, "RW", 0); f = DMA_CTRL.add("END_EN", 2, 1, "RW", 0);
+      f = DMA_CTRL.add("CLR", 3, 1, "W1S", 0, 1); f = DMA_CTRL.add("SEL", 4, 2, "RW", 0);
       DMA_BLK  = mk("DMA_BLK", 'h078, 0, 1);  f = DMA_BLK.add("BLK", 0, 6, "RW", 0);
       DMA_STAT = mk("DMA_STAT", 'h07C, 0, 1);
-      f = DMA_STAT.add("REQ", 0, 1, "RO", 0, 1); f = DMA_STAT.add("DONE", 8, 1, "W1C", 0, 1); f = DMA_STAT.add("DENY", 16, 1, "W1C", 0, 1);
+      f = DMA_STAT.add("REQ", 0, 1, "RO", 0, 1);  f = DMA_STAT.add("BUSY", 1, 1, "RO", 0, 1);
+      f = DMA_STAT.add("DONE", 8, 1, "W1C", 0, 1); f = DMA_STAT.add("DENY", 16, 1, "W1C", 0, 1); f = DMA_STAT.add("END", 24, 1, "W1C", 0, 1);
       PARAM   = mk("PARAM", 'h0F8);
       f = PARAM.add("FIFO_DEPTH", 0, 8, "RO", fifo_depth); f = PARAM.add("HS_SUP", 8, 1, "RO", 1);
       f = PARAM.add("DEVID_SUP", 9, 1, "RO", 1);           f = PARAM.add("DMA_SUP", 10, 1, "RO", 1);
+      f = PARAM.add("DMA_END_SUP", 11, 1, "RO", 1);
       VERSION = mk("VERSION", 'h0FC);    f = VERSION.add("VERSION", 0, 32, "RO", version);
 
       lock_model();

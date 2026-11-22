@@ -11,7 +11,7 @@ trong `run_scenario()`: tuần tự, song song (`fork`), randomize kèm inline c
 |---|---|
 | Kiểm tra theo spec (black-box) | Kỳ vọng chỉ suy ra từ đặc tả (bảng thanh ghi, timing 4.4.2, ví dụ DMA 4.9.4, quy trình mục 6). Từ RTL chỉ dùng danh sách port (mục 3). |
 | Scoreboard / reference model | CMD → bus → CRX, bus → TRX (tag), TTX → bus, Device ID, bảng giải mã địa chỉ 4.5.1, luật APB (PSLVERR, đọc 0) — kiểm mọi message trong mọi test. |
-| SVA (mức port) | R3, R8 (handshake DMA), timing IRQ 4.8.1, giá trị reset 6.1.1, nhả bus khi `EN = 0`, không có X trên output. |
+| SVA (mức port) | R3, R8 (handshake request DMA, rút request bằng `DMA_CTRL.CLR`, `dma_end_ack_o` = `dma_end_req_i` trễ 1 chu kỳ), timing IRQ 4.8.1, giá trị reset 6.1.1, nhả bus khi `EN = 0`, không có X trên output. |
 | VIP monitor | Giao thức APB, giao thức I2C và timing UM10204 theo mode. |
 | Self-check trong sequence | Event `INTR_STAT`, `CSTAT`, `STATUS`, `TSTAT`, mức FIFO, danh sách entry TRX, bộ nhớ VIP slave, đo timing bus. |
 | Register model | `uvm_reg_hw_reset_seq`, `uvm_reg_bit_bash_seq`, mirror check (adapter dự đoán đúng ghi một phần byte lane). |
@@ -56,7 +56,7 @@ knob của test, hook `randomize_init()`) → `main_phase` (`run_scenario()`) �
 | F15 SCL timeout, bus error, bus idle | BUS-06, BUS-07, BUS-10, BUS-18 |
 | F16 4 FIFO | FIFO-01..05, CTL-06/07, TGT-04, TGT-08/09 |
 | F17 Ngắt | INT-01..03, CTL-04, CTL-08, FIFO-04/05, TGT-01 |
-| F18 DMA | DMA-01..10 |
+| F18 DMA | DMA-01..13 (DMA-12: handshake kết thúc; DMA-13: rút request / DMAC không có DENY); BUS-11 (SWRST với `DMA_STAT.END`, `END_EN`) |
 | F19 Bus monitor / override | BUS-09, BUS-05 |
 | F20 Cổng debug | quan sát trong mọi test (side monitor); BUS-08 (độ trễ `debug_scl_o` / `debug_sda_o`) |
 | 1.4 không hỗ trợ: 10-bit, CBUS, HW general call | TGT-13, TGT-12, TGT-11 (chỉ kiểm hành vi đã định nghĩa: NACK / dữ liệu thường) |
@@ -169,7 +169,7 @@ Cột *Regression*: `Nx dA,B` = N seed trên mỗi build FIFO_DEPTH A, B (`sim/r
 | VP-BUS-15 | `i2c_arb_lost_stop_test` | corner: SDA held low after the STOP release: STOP watchdog = arbitration lost, no hang (4.4.3, 4.4.6) | `i2c_arb_lost_stop_vseq`, `i2c_ip_ctrl_xfer_vseq` | 2x d16 |
 | VP-BUS-16 | `i2c_arb_lost_sp_test` | corner: SCL pulled low by another device during the Sr / STOP setup: arbitration lost, recovery (4.4.6) | `i2c_arb_lost_sp_vseq`, `i2c_ip_ctrl_xfer_vseq` | 2x d4,16 |
 | VP-BUS-17 | `i2c_arb_hold_test` | corner: SCL pulled low by another device inside the START / Sr hold (clock synchronization, no loss), before the START is visible and after the SDA release of the STOP (arbitration lost) (4.4.3, 4.4.6) | `i2c_arb_hold_vseq`, `i2c_ip_ctrl_xfer_vseq` | 3x d4,16 |
-| VP-BUS-18 | `i2c_bus_err_ttx_test` | corner: misplaced START / STOP while the target transmits a 1 bit and in the ACK clock of the controller: per-state behaviour, TTX / TRX / events (4.3.2, 4.5.10) | `i2c_bus_err_ttx_vseq`, `i2c_ip_ext_xfer_vseq` | 3x d4,16 |
+| VP-BUS-18 | `i2c_bus_err_ttx_test` | corner: misplaced START / STOP while the target transmits a 1 bit and in the ACK clock of the controller: per-state behaviour, TTX / TRX / events (4.3.2, 4.5.10) | `i2c_bus_err_ttx_vseq`, `i2c_ip_ext_xfer_vseq`, `i2c_ip_trx_collect_vseq` | 3x d4,16 |
 
 ### DMA (F18; 4.9, 6.15)
 
@@ -186,6 +186,8 @@ Cột *Regression*: `Nx dA,B` = N seed trên mỗi build FIFO_DEPTH A, B (`sim/r
 | VP-DMA-09 | `i2c_dma_abort_test` | controller abort (NACK) with SEL = CMD clears DMA_CTRL.EN, recovery (4.4.9, 6.13) | `i2c_dma_abort_vseq` | 1x d4,16 |
 | VP-DMA-10 | `i2c_dma_rand_test` | random DMA operations: SEL, PFC, BLK, lengths (+N_ITER) | `i2c_dma_rand_vseq` | 3x d4,16,32 |
 | VP-DMA-11 | `i2c_dma_pfc_late_test` | corner: RX peripheral flow control with the LAST entry already in CRX (lpos > BLK, = BLK, < BLK), 4.9.2 | `i2c_dma_pfc_late_vseq` | 1x d4,8,16,32 |
+| VP-DMA-12 | `i2c_dma_end_test` | end handshake from the DMAC (dma_end_req_i / dma_end_ack_o, DMA-350 trigger output): ack one cycle later, DMA_STAT.END, END_EN = 0 vs 1, pulse source, request kept at the end event, END_EN lock (4.9.6, 5.2.22, 5.2.24) | `i2c_dma_end_vseq`, `i2c_ip_ctrl_xfer_vseq` | 2x d4,16,32 |
+| VP-DMA-13 | `i2c_dma_clr_test` | DMAC without DENY: request withdrawn by DMA_CTRL.CLR (EN = 0 / EN = 1, IDLE), late ack ignored, ack wins over CLR in the same cycle (4.9.3, 4.9.7) | `i2c_dma_clr_vseq`, `i2c_ip_ctrl_xfer_vseq` | 2x d4,16 |
 
 ### Random (toàn bộ đường dữ liệu)
 
@@ -243,6 +245,19 @@ Bổ sung từ phân tích code coverage (kịch bản được định nghĩa t
 | BUS-18 | START / STOP sai vị trí khi target đang phát bit 1 (clock 1..8 ngẫu nhiên) và ở clock ACK của controller (S sau NACK, P sau ACK): `BUS_ERR` theo `bit_cnt`, entry TRX (`RSTART` / STOP), byte TTX đang phát bị bỏ, không `TTX_DONE`, khôi phục bằng `TTX_FLUSH` | 4.3.2, 4.5.10 |
 | TGT-18 | Device ID D1..D11: `0xF8` không có byte địa chỉ rồi Sr `0xF9`, `0xF8` lặp lại hủy armed, byte thừa sau địa chỉ, `0xF9` lặp lại đọc lại từ đầu, `0xF9` khi chưa armed / sau frame thường / khi `DEVID_EN` chốt 0 tại Sr, `ADDR0` thuộc dải reserved, không có entry TRX / `TADDR` / `TSTOP` | 4.5.6 |
 | BUS-14 | Byte đọc trước khi thua ở slot NACK nằm trong CRX với `LAST = 1`; test xả CRX như quy trình 6.13 mới | 4.4.6 (5), 6.13 |
+
+Giao diện DMA mở rộng (spec 1.5: cặp `dma_end_req_i` / `dma_end_ack_o` tương đương trigger output của DMA-350,
+`DMA_CTRL.END_EN` / `CLR`, `DMA_STAT.BUSY` / `END`). Mô hình DMAC của TB có thêm các chế độ: kết thúc 4 pha / xung /
+không có, DMAC không có `DENY`, DMAC không có `LAST_OKAY`, ack muộn sau khi request bị rút:
+
+| VP ID | Kịch bản | Mục spec |
+|---|---|---|
+| DMA-12 | Kết thúc 4 pha sau `LAST_OKAY` với `END_EN = 0`: ack trễ 1 chu kỳ, chỉ set `DMA_STAT.END`, không thêm `DMA_DONE`; `END_EN = 0` khi `EN = 1`: kênh vẫn bật; DMAC không có `LAST_OKAY` + xung terminal count, `END_EN = 1`: `OKAY` cuối không hoàn tất, xung kết thúc hoàn tất; sự kiện kết thúc khi đang có request (DMAC không DENY): request được giữ tới `CLR`; `END_EN = 1` nhưng `EN = 0`: chỉ ghi nhận; khóa `END_EN` khi `EN = 1` | 4.9.6, 5.2.22, 5.2.24 |
+| DMA-13 | DMAC không có `DENY`: request treo vô hạn, cấu hình bị khóa, `CLR` rút request ở chu kỳ sau (`EN = 0` và `EN = 1` — phát lại khi về IDLE), `CLR` ở IDLE không tác dụng; DMAC vẫn phục vụ khi request bị rút: phần tử vào FIFO, ack muộn bị bỏ qua (không `DONE`), `debug_dma_state_o = 2` chờ ack về 0; `ack` và `CLR` cùng chu kỳ: `ack` thắng (`DENY` được xử lý) | 4.9.3, 4.9.7, 7.2 |
+| DMA-10 | Mỗi operation chọn ngẫu nhiên kiểu kết thúc của DMAC (4 pha / xung / không có) với `END_EN = 0` | 4.9.6 |
+
+Kiểm độ nhạy (mutation trên `i2c_dma_ch`): bỏ qua `CLR`, `CLR` thắng `ack`, không chờ ack muộn ở IDLE, hoàn tất
+khi `EN = 0`, bỏ qua `END_EN`, `dma_end_ack_o` tổ hợp — cả 6 lỗi đều bị DMA-12 / DMA-13 hoặc SVA phát hiện.
 
 Phát hiện khi chạy các corner case mới: xem `specs/features_and_limitations.md` (bus clear 9 xung có thể không giải
 phóng bus khi target rơi đúng slot ACK ở clock STOP; phần mềm phải đọc `BUSMON` và lặp lại theo bước 5 của 6.14 —

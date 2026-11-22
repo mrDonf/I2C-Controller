@@ -559,9 +559,11 @@ class i2c_swrst_regs_vseq extends i2c_ip_base_vseq;
     for (int i = 0; i < 3; i++) wr(R_CMD, c_wr(i));          // CMD (controller disabled)
     load_ttx('{8'h11, 8'h22});
     wr(R_INTR_TEST, EVENT_MASK);
-    wr(R_DMA_CTRL, 32'h0000_0023);                           // SEL = TTX, PFC, EN: request -> DMAC DENY
+    wr(R_DMA_CTRL, 32'h0000_0027);                           // SEL = TTX, PFC, END_EN, EN: request -> DMAC DENY
     #(2us);
     chk_rd(R_DMA_STAT, 32'h0001_0000, 32'h0001_0000, "DMA_STAT.DENY before SWRST");
+    p_sequencer.dmac.send_end(1);                            // DMAC end pulse: END, and DONE (END_EN = 1, EN = 1)
+    chk_rd(R_DMA_STAT, 32'h0101_0100, 32'h0101_0100, "DMA_STAT.DONE/DENY/END before SWRST");
     chk_rd(R_CSTAT, 32'h08, '1, "CSTAT before SWRST");
     // SWRST through byte lane 3 only (CTRL[4:0] not written by this access)
     wr(R_CTRL, 32'h8000_0000, 4'b1000);
@@ -570,8 +572,8 @@ class i2c_swrst_regs_vseq extends i2c_ip_base_vseq;
     chk_rd(R_INTR_STAT, 32'h0000_0201, '1, "event bits cleared (level bits CMD_THR/TTX_THR remain)");
     chk_rd(R_CSTAT, 0, '1, "CSTAT cleared");
     chk_rd(R_TSTAT, 0, '1, "TSTAT cleared");
-    chk_rd(R_DMA_CTRL, 32'h0000_0022, '1, "DMA_CTRL.EN cleared, SEL/PFC kept");
-    chk_rd(R_DMA_STAT, 0, 32'h0001_0100, "DMA_STAT.DONE/DENY cleared");
+    chk_rd(R_DMA_CTRL, 32'h0000_0026, '1, "DMA_CTRL.EN cleared, SEL/PFC/END_EN kept");
+    chk_rd(R_DMA_STAT, 0, 32'h0101_0100, "DMA_STAT.DONE/DENY/END cleared");
     chk_rd(R_BUSMON, 32'h0000_0200, 32'h0000_0700, "BUSMON[10:8] kept");
     foreach (kept_a[i]) chk_rd(kept_a[i], kept_v[i], '1, $sformatf("register 0x%03h kept by SWRST", kept_a[i]));
     chk(side.scl_oe === 1'b0 && side.sda_oe === 1'b0, "SCL/SDA released");

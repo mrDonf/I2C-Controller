@@ -6,7 +6,7 @@ class i2c_ip_tb_params extends uvm_object;
   `uvm_object_utils(i2c_ip_tb_params)
   int unsigned fifo_depth = 16;
   bit [23:0]   devid_rst  = 24'h0;
-  bit [31:0]   version    = 32'h0002_0000;
+  bit [31:0]   version    = 32'h0002_0100;
   real         pclk_ns    = 10.0;
   function new(string name = "i2c_ip_tb_params"); super.new(name); endfunction
 endclass : i2c_ip_tb_params

@@ -5,7 +5,7 @@
 //   APB  : APB VIP interface (requester = CPU model + DMAC model)            -> DUT APB4 slave port
 //   I2C  : I2C VIP interface (tri1 SCL/SDA, VIP master / slaves)            <-> DUT open-drain pads
 //          + bit-bang / fault-injection pull-downs (i2c_bb_if)
-//   DMA  : i2c_ip_dma_if (DMAC model)                                       <-> DUT dma_req / dma_ack
+//   DMA  : i2c_ip_dma_if (DMAC model)                                       <-> DUT dma_req / dma_ack / dma_end
 //   side : i2c_ip_side_if (irq_*, hs_mode_o, scl_cs_en_o, debug_*)          <-  DUT
 //   SVA  : i2c_ip_sva on the DUT ports
 //
@@ -26,7 +26,7 @@ module tb_top;
 
   localparam int          P_FIFO_DEPTH = `FIFO_DEPTH;
   localparam logic [23:0] P_DEVID_RST  = 24'h7A35C1;
-  localparam logic [31:0] P_VERSION    = 32'h0002_0000;
+  localparam logic [31:0] P_VERSION    = 32'h0002_0100;
 
   // ---------------------------------------------------------------- clock / reset
   vip_clk_rst_if crif ();
@@ -82,6 +82,8 @@ module tb_top;
     .dma_req_type_o      (dmaif.req_type),
     .dma_ack_i           (dmaif.ack),
     .dma_ack_type_i      (dmaif.ack_type),
+    .dma_end_req_i       (dmaif.end_req),
+    .dma_end_ack_o       (dmaif.end_ack),
     .debug_bus_busy_o    (sideif.d_bus_busy),
     .debug_bus_free_o    (sideif.d_bus_free),
     .debug_hs_active_o   (sideif.d_hs_active),
@@ -117,6 +119,7 @@ module tb_top;
     .scl_oe_o (scl_oe), .sda_oe_o (sda_oe), .scl_cs_en_o (sideif.cs_en), .hs_mode_o (sideif.hs_mode),
     .irq_o (sideif.irq), .irq_ctrl_o (sideif.irq_ctrl), .irq_tgt_o (sideif.irq_tgt), .irq_err_o (sideif.irq_err),
     .dma_req_o (dmaif.req), .dma_req_type_o (dmaif.req_type), .dma_ack_i (dmaif.ack), .dma_ack_type_i (dmaif.ack_type),
+    .dma_end_req_i (dmaif.end_req), .dma_end_ack_o (dmaif.end_ack),
     .debug_intr_stat_o (sideif.d_intr_stat), .debug_scl_o (sideif.d_scl), .debug_sda_o (sideif.d_sda),
     .debug_bus_busy_o (sideif.d_bus_busy), .debug_ctrl_active_o (sideif.d_ctrl_active),
     .debug_tgt_hold_o (sideif.d_tgt_hold), .debug_cmd_lvl_o (sideif.d_cmd_lvl)

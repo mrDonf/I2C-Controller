@@ -8,10 +8,12 @@
 //   SVA_CS_HS        R3        scl_cs_en_o only in Hs-mode (hs_mode_o = 1)
 //   SVA_IRQ*         4.8.1     irq_* = registered OR of (INTR_STAT & INTR_EN) per group; debug_intr_stat_o is
 //                              INTR_STAT delayed one cycle, so irq_x(t) = |(debug_intr_stat_o(t) & INTR_EN(t-1))
-//   SVA_DMA_HOLD     4.9.3/R8  a request is never withdrawn before ack is sampled
+//   SVA_DMA_HOLD     4.9.3/R8  a request is never withdrawn before ack is sampled, except by DMA_CTRL.CLR
 //   SVA_DMA_TYPE     3.4/R8    req_type stable while req = 1
 //   SVA_DMA_DROP     4.9.3     req returns to 0 the cycle after ack = 1 is sampled
 //   SVA_DMA_NEXT     4.9.3/R8  a new request only after ack was sampled 0 (earliest one cycle after)
+//   SVA_DMA_CLR      4.9.7     DMA_CTRL.CLR written while req = 1 and ack = 0: req = 0 the next cycle
+//   SVA_DMA_END_ACK  4.9.6/R8  dma_end_ack_o = dma_end_req_i delayed one cycle
 //   SVA_EN0_REL      4.1/4.10  CTRL.EN = 0: SCL/SDA released unless BUSMON override; override drives ~xxx_OVRD
 //   SVA_EN0_HS       4.3.4     CTRL.EN = 0: hs_mode_o = 0, scl_cs_en_o = 0
 //   SVA_NO_X         7.1       outputs never unknown after reset
@@ -48,6 +50,8 @@ module i2c_ip_sva (
   input logic [1:0]  dma_req_type_o,
   input logic        dma_ack_i,
   input logic [1:0]  dma_ack_type_i,
+  input logic        dma_end_req_i,
+  input logic        dma_end_ack_o,
   input logic [21:0] debug_intr_stat_o,
   input logic        debug_scl_o,
   input logic        debug_sda_o,
@@ -112,7 +116,7 @@ module i2c_ip_sva (
   A_RST_OUT: assert property (@(posedge PCLK) disable iff (!sva_en)
       !PRESETn |-> (scl_oe_o == 1'b0 && sda_oe_o == 1'b0 && scl_cs_en_o == 1'b0 && hs_mode_o == 1'b0 &&
                     irq_o == 1'b0 && irq_ctrl_o == 1'b0 && irq_tgt_o == 1'b0 && irq_err_o == 1'b0 &&
-                    dma_req_o == 1'b0 && dma_req_type_o == 2'b00 && PSLVERR == 1'b0 &&
+                    dma_req_o == 1'b0 && dma_req_type_o == 2'b00 && dma_end_ack_o == 1'b0 && PSLVERR == 1'b0 &&
                     debug_intr_stat_o == '0 && debug_scl_o == 1'b1 && debug_sda_o == 1'b1 &&
                     debug_bus_busy_o == 1'b0 && debug_ctrl_active_o == 1'b0 && debug_cmd_lvl_o == '0))
     else fail("SVA_RST_OUT", "output not at its reset value during PRESETn = 0");
@@ -141,9 +145,18 @@ module i2c_ip_sva (
       ##1 (irq_err_o == |(debug_intr_stat_o[20:16] & $past(en_sh[20:16]))))
     else fail("SVA_IRQ_ERR", "irq_err_o is not the OR of INTR_STAT[20:16] & INTR_EN[20:16]");
 
-  // ---------------------------------------------------------------- DMA handshake (4.9.3, R8)
-  A_DMA_HOLD: assert property (disable iff (!PRESETn || !sva_en) (dma_req_o && !dma_ack_i) |=> dma_req_o)
-    else fail("SVA_DMA_HOLD", "dma_req_o withdrawn before dma_ack_i");
+  // ---------------------------------------------------------------- DMA handshake (4.9.3, 4.9.6, 4.9.7, R8)
+  // DMA_CTRL.CLR: write of bit 3 through byte lane 0 to DMA_CTRL (0x074), effective at the end of the access phase
+  wire dma_clr_wr = apb_wr && (waddr == 10'h01D) && PSTRB[0] && PWDATA[3];
+
+  A_DMA_HOLD: assert property (disable iff (!PRESETn || !sva_en) (dma_req_o && !dma_ack_i && !dma_clr_wr) |=> dma_req_o)
+    else fail("SVA_DMA_HOLD", "dma_req_o withdrawn before dma_ack_i without DMA_CTRL.CLR");
+
+  A_DMA_CLR: assert property (disable iff (!PRESETn || !sva_en) (dma_req_o && !dma_ack_i && dma_clr_wr) |=> !dma_req_o)
+    else fail("SVA_DMA_CLR", "dma_req_o not withdrawn the cycle after DMA_CTRL.CLR");
+
+  A_DMA_END_ACK: assert property (disable iff (!PRESETn || !sva_en) ##1 (dma_end_ack_o == $past(dma_end_req_i)))
+    else fail("SVA_DMA_END_ACK", "dma_end_ack_o is not dma_end_req_i delayed one cycle");
 
   A_DMA_TYPE: assert property (disable iff (!PRESETn || !sva_en) (dma_req_o && $past(dma_req_o)) |-> $stable(dma_req_type_o))
     else fail("SVA_DMA_TYPE", "dma_req_type_o changed while dma_req_o = 1");
@@ -165,7 +178,7 @@ module i2c_ip_sva (
 
   // ---------------------------------------------------------------- X checks (7.1)
   A_NO_X: assert property (disable iff (!PRESETn || !sva_en)
-      !$isunknown({scl_oe_o, sda_oe_o, scl_cs_en_o, hs_mode_o, irq_o, irq_ctrl_o, irq_tgt_o, irq_err_o, dma_req_o, dma_req_type_o, PREADY, PSLVERR}))
+      !$isunknown({scl_oe_o, sda_oe_o, scl_cs_en_o, hs_mode_o, irq_o, irq_ctrl_o, irq_tgt_o, irq_err_o, dma_req_o, dma_req_type_o, dma_end_ack_o, PREADY, PSLVERR}))
     else fail("SVA_NO_X", "unknown value on an output");
 
   A_NO_X_RD: assert property (disable iff (!PRESETn || !sva_en) (PSEL && PENABLE && !PWRITE) |-> !$isunknown(PRDATA))
@@ -175,6 +188,10 @@ module i2c_ip_sva (
   C_CS_EN:   cover property (disable iff (!PRESETn) $rose(scl_cs_en_o));
   C_HS:      cover property (disable iff (!PRESETn) $rose(hs_mode_o));
   C_DMA_REQ: cover property (disable iff (!PRESETn) dma_req_o && dma_ack_i);
+  C_DMA_CLR: cover property (disable iff (!PRESETn) dma_req_o && !dma_ack_i && dma_clr_wr);
+  C_DMA_LATE_ACK: cover property (disable iff (!PRESETn) $fell(dma_req_o) && !$past(dma_ack_i) ##[1:$] ($rose(dma_ack_i) && !dma_req_o));
+  C_DMA_END_HS: cover property (disable iff (!PRESETn) dma_end_req_i && dma_end_ack_o);
+  C_DMA_END_PULSE: cover property (disable iff (!PRESETn) $rose(dma_end_req_i) ##1 !dma_end_req_i);
   C_IRQ_ERR: cover property (disable iff (!PRESETn) $rose(irq_err_o));
 endmodule : i2c_ip_sva
 
