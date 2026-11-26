@@ -1,6 +1,7 @@
 // -----------------------------------------------------------------------------
-// i2c_ip_side_monitor - passive monitor of the sideband / debug ports (spec 3.3, 3.5)
-//   ap   : i2c_ip_side_item for every rising edge of an INTR_STAT bit (debug_intr_stat_o), START / STOP pulses
+// i2c_ip_side_monitor - passive monitor of the sideband / status ports (spec 3.3, 3.5)
+//   ap   : i2c_ip_side_item for every rising edge of an INTR_STAT bit (debug_intr_stat_o), START / STOP seen on
+//          the bus lines (TB observation b_start / b_stop of the side interface)
 //   ev_cnt[i]         number of 0->1 transitions of INTR_STAT[i] (tests use it as "event happened since mark")
 //   ctrl_active_at(t) / ctrl_fell_between(t0, t1) : history of debug_ctrl_active_o (= STATUS.CTRL_ACTIVE), used by
 //                       the scoreboard to know which bus messages were driven by the DUT controller
@@ -70,12 +71,12 @@ class i2c_ip_side_monitor extends uvm_monitor;
         end
       end
       st_p = vif.mon_cb.d_intr_stat;
-      if (vif.mon_cb.d_start === 1'b1) begin
+      if (vif.mon_cb.b_start === 1'b1) begin
         i2c_ip_side_item it = i2c_ip_side_item::type_id::create("start");
         it.kind = SIDE_START; it.t = $time; n_start++;
         ap.write(it);
       end
-      if (vif.mon_cb.d_stop === 1'b1) begin
+      if (vif.mon_cb.b_stop === 1'b1) begin
         i2c_ip_side_item it = i2c_ip_side_item::type_id::create("stop");
         it.kind = SIDE_STOP; it.t = $time; n_stop++;
         ap.write(it);

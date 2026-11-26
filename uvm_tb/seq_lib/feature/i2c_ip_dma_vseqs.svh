@@ -630,6 +630,7 @@ class i2c_dma_clr_vseq extends i2c_ip_dma_base_vseq;
     // (d) DMAC already serving when the request is withdrawn (4.9.7, SW condition violated): the elements moved by
     //     the DMAC reach the FIFO, the late ack (LAST_OKAY) is ignored - no DONE / DMA_DONE, channel back to IDLE
     cfg.dma_cfg.ack_after_withdraw = 1;
+    cfg.dma_cfg.late_ack_hold = 40;                           // long enough to read DMA_STAT
     cfg.dma_cfg.end_mode = END_NONE;
     cfg.dma_cfg.lat_min = 60; cfg.dma_cfg.lat_max = 60;
     nd = n_done();
@@ -644,8 +645,8 @@ class i2c_dma_clr_vseq extends i2c_ip_dma_base_vseq;
     fork
       begin                                                   // late ack seen in IDLE: the handshake waits in ACK
         @(posedge side.clk iff (cfg.dma_cfg.vif.ack === 1'b1 && cfg.dma_cfg.vif.req === 1'b0));
-        repeat (2) @(posedge side.clk);                       // debug_dma_state_o is registered
-        chk(side.d_dma_state == 2, "late ack in IDLE: handshake waits for ack = 0 in ACK (debug_dma_state_o = 2)");
+        wait_cycles(2);
+        chk_rd(R_DMA_STAT, 32'h2, 32'h3, "late ack in IDLE: handshake waits for ack = 0 in ACK (DMA_STAT.BUSY = 1, REQ = 0)");
       end
     join_none
     wait_op(o, 1ms, "late ack");
@@ -658,6 +659,7 @@ class i2c_dma_clr_vseq extends i2c_ip_dma_base_vseq;
 
     // (e) ack sampled in the same cycle as the CLR write: the ack wins (handshake completes, ack_type processed)
     cfg.dma_cfg.ack_after_withdraw = 0;
+    cfg.dma_cfg.late_ack_hold = 0;
     cfg.dma_cfg.lat_min = 200; cfg.dma_cfg.lat_max = 200;     // the DMAC model stays in its arbitration delay
     p_sequencer.dmac.stop_op();
     wr(R_DMA_CTRL, 32'h21);
@@ -678,6 +680,38 @@ class i2c_dma_clr_vseq extends i2c_ip_dma_base_vseq;
     wait_cycles(4);
     chk_rd(R_DMA_STAT, 32'h0001_0000, 32'h0001_0103, "ack and CLR in the same cycle: the ack wins (DENY processed)");
     wait_cycles(250);                                         // the DMAC model leaves its delay (request gone: no ack)
+    wr(R_DMA_STAT, 32'h0101_0100);
+    wr(R_DMA_CTRL, 32'h0);
+
+    // (f) CLR with EN = 1 and a late ack sampled in the first IDLE cycle after the withdrawal (4.9.3, 4.9.7): the
+    //     IDLE -> ACK transition has priority over a new request; ack_type (OKAY) is not processed; the request is
+    //     issued again only after ack = 0
+    wr(R_DMA_CTRL, 32'h21);                                   // EN 0 -> 1 (also releases the DENY block of (e))
+    wait (cfg.dma_cfg.vif.req === 1'b1);
+    fork
+      wr(R_DMA_CTRL, 32'h29);                                 // CLR, EN = 1
+      begin
+        bit req_seen = 0;
+        do @(posedge side.clk);
+        while (!(cfg.apb_cfg.vif.psel === 1'b1 && cfg.apb_cfg.vif.penable === 1'b0 && cfg.apb_cfg.vif.pwrite === 1'b1 &&
+                 cfg.apb_cfg.vif.paddr[11:0] == R_DMA_CTRL));
+        repeat (2) @(posedge side.clk);                       // CLR sampled at the 1st edge, IDLE after the 2nd
+        cfg.dma_cfg.vif.ack <= 1'b1;
+        cfg.dma_cfg.vif.ack_type <= DMA_OKAY;
+        repeat (12) begin
+          @(posedge side.clk);
+          if (cfg.dma_cfg.vif.req === 1'b1) req_seen = 1;
+        end
+        chk(!req_seen, "late ack in the first IDLE cycle (EN = 1): no new request while ack = 1");
+        cfg.dma_cfg.vif.ack <= 1'b0;
+        cfg.dma_cfg.vif.ack_type <= 2'b00;
+      end
+    join
+    wait_cycles(4);
+    chk(cfg.dma_cfg.vif.req === 1'b1, "request issued again after ack = 0 (EN = 1)");
+    chk_rd(R_DMA_STAT, 32'h3, 32'h0101_0103, "late ack (EN = 1): ack_type not processed, no DONE / DENY; new request pending");
+    wait_cycles(250);                                         // the DMAC model denies the pending request (no operation)
+    chk_rd(R_DMA_STAT, 32'h0001_0000, 32'h0001_0003, "pending request denied by the DMAC");
     wr(R_DMA_STAT, 32'h0101_0100);
     wr(R_DMA_CTRL, 32'h0);
     cfg.dma_cfg.lat_min = 2; cfg.dma_cfg.lat_max = 6;

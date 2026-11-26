@@ -53,12 +53,12 @@ module i2c_ip_sva (
   input logic        dma_end_req_i,
   input logic        dma_end_ack_o,
   input logic [21:0] debug_intr_stat_o,
-  input logic        debug_scl_o,
-  input logic        debug_sda_o,
   input logic        debug_bus_busy_o,
   input logic        debug_ctrl_active_o,
+  input logic        debug_ctrl_hold_o,
+  input logic        debug_tgt_active_o,
   input logic        debug_tgt_hold_o,
-  input logic [5:0]  debug_cmd_lvl_o
+  input logic [1:0]  debug_dma_sel_o
 );
   import uvm_pkg::*;
 
@@ -117,8 +117,9 @@ module i2c_ip_sva (
       !PRESETn |-> (scl_oe_o == 1'b0 && sda_oe_o == 1'b0 && scl_cs_en_o == 1'b0 && hs_mode_o == 1'b0 &&
                     irq_o == 1'b0 && irq_ctrl_o == 1'b0 && irq_tgt_o == 1'b0 && irq_err_o == 1'b0 &&
                     dma_req_o == 1'b0 && dma_req_type_o == 2'b00 && dma_end_ack_o == 1'b0 && PSLVERR == 1'b0 &&
-                    debug_intr_stat_o == '0 && debug_scl_o == 1'b1 && debug_sda_o == 1'b1 &&
-                    debug_bus_busy_o == 1'b0 && debug_ctrl_active_o == 1'b0 && debug_cmd_lvl_o == '0))
+                    debug_intr_stat_o == '0 && debug_bus_busy_o == 1'b0 && debug_ctrl_active_o == 1'b0 &&
+                    debug_ctrl_hold_o == 1'b0 && debug_tgt_active_o == 1'b0 && debug_tgt_hold_o == 1'b0 &&
+                    debug_dma_sel_o == 2'b00))
     else fail("SVA_RST_OUT", "output not at its reset value during PRESETn = 0");
 
   // ---------------------------------------------------------------- pads / Hs (3.2, R3)

@@ -48,27 +48,12 @@ module apb_i2c
   // DMA end of operation, DMAC -> IP (4-phase handshake or pulse)
   input  logic              dma_end_req_i,
   output logic              dma_end_ack_o,
-  // debug / status (registered)
+  // status for SoC logic (registered, spec 3.5)
   output logic              debug_bus_busy_o,
-  output logic              debug_bus_free_o,
-  output logic              debug_hs_active_o,
-  output logic              debug_scl_o,
-  output logic              debug_sda_o,
-  output logic              debug_start_o,
-  output logic              debug_stop_o,
-  output logic [3:0]        debug_bit_cnt_o,
   output logic              debug_ctrl_active_o,
   output logic              debug_ctrl_hold_o,
-  output logic [3:0]        debug_ctrl_state_o,
   output logic              debug_tgt_active_o,
-  output logic              debug_tgt_rw_o,
   output logic              debug_tgt_hold_o,
-  output logic [2:0]        debug_tgt_state_o,
-  output logic [5:0]        debug_cmd_lvl_o,
-  output logic [5:0]        debug_crx_lvl_o,
-  output logic [5:0]        debug_ttx_lvl_o,
-  output logic [5:0]        debug_trx_lvl_o,
-  output logic [1:0]        debug_dma_state_o,
   output logic [1:0]        debug_dma_sel_o,
   output logic [21:0]       debug_intr_stat_o
 );
@@ -126,11 +111,10 @@ module apb_i2c
   logic [3:0]  lvl_irq;
 
   // bus
-  logic        scl_f, sda_f, scl_f_d, sda_f_d;
+  logic        scl_f, sda_f;
   logic        scl_rise, scl_fall, sda_rise, sda_fall;
   logic        start_det, stop_det, bus_busy, bus_free, hs_active, hs_det;
   logic        bus_err, scl_tout;
-  logic [3:0]  bit_cnt;
 
   // controller
   logic        ctrl_cmd_flush;
@@ -139,14 +123,12 @@ module apb_i2c
   logic        ctrl_ev_cmpl, ctrl_ev_nack, ctrl_ev_arb, ctrl_ev_cmderr, ctrl_ev_stall;
   logic        ctrl_ev_bcdone;
   logic [6:0]  ctrl_cstat_set;
-  ctrl_state_t ctrl_state;
 
   // target
   logic        tgt_scl_oe, tgt_sda_oe, tgt_active, tgt_rw, tgt_hold;
   logic        tgt_ev_tx_req, tgt_ev_taddr, tgt_ev_tstop, tgt_ev_ttx_done, tgt_ev_gc_swrst;
   logic        tgt_ev_trx_ovf, tgt_ev_ttx_unf;
   logic [10:0] tstat;
-  tgt_state_t  tgt_state;
 
   // DMA
   logic [5:0]  dma_avail, dma_lpos;
@@ -328,13 +310,13 @@ module apb_i2c
   i2c_in_filter u_scl_filt (
     .clk    (PCLK),     .rst_n  (PRESETn), .din  (scl_i),
     .spklen (hs_active ? spklen_hs : spklen_fs),
-    .dout   (scl_f),    .dout_d (scl_f_d), .rise (scl_rise), .fall (scl_fall)
+    .dout   (scl_f),    .rise   (scl_rise), .fall (scl_fall)
   );
 
   i2c_in_filter u_sda_filt (
     .clk    (PCLK),     .rst_n  (PRESETn), .din  (sda_i),
     .spklen (hs_active ? spklen_hs : spklen_fs),
-    .dout   (sda_f),    .dout_d (sda_f_d), .rise (sda_rise), .fall (sda_fall)
+    .dout   (sda_f),    .rise   (sda_rise), .fall (sda_fall)
   );
 
   i2c_bus_mon u_bus_mon (
@@ -359,8 +341,7 @@ module apb_i2c
     .hs_active     (hs_active),
     .hs_det        (hs_det),
     .bus_err       (bus_err),
-    .scl_tout      (scl_tout),
-    .bit_cnt       (bit_cnt)
+    .scl_tout      (scl_tout)
   );
 
   //---------------------------------------------------------------------------
@@ -398,7 +379,6 @@ module apb_i2c
     .owner         (ctrl_owner),
     .busclr_active (ctrl_busclr),
     .hold          (ctrl_hold),
-    .state         (ctrl_state),
     .abort_clr     (ctrl_abort_clr),
     .busclr_clr    (ctrl_busclr_clr),
     .ev_cmpl       (ctrl_ev_cmpl),
@@ -458,8 +438,7 @@ module apb_i2c
     .active      (tgt_active),
     .rw          (tgt_rw),
     .hold        (tgt_hold),
-    .tstat       (tstat),
-    .state       (tgt_state)
+    .tstat       (tstat)
   );
 
   //---------------------------------------------------------------------------
@@ -552,52 +531,25 @@ module apb_i2c
   end
 
   //---------------------------------------------------------------------------
-  // Debug / status outputs (registered: 1 PCLK after the internal value).
-  // hs_mode_o and the filter's delayed outputs already are such flops.
+  // Status outputs for SoC logic (registered: 1 PCLK after the internal value)
+  //   bus / controller / target activity, SCL stretch waiting for service,
+  //   FIFO served by the DMA channel, raw INTR_STAT
   //---------------------------------------------------------------------------
-  assign debug_hs_active_o = hs_mode_o;
-  assign debug_scl_o       = scl_f_d;
-  assign debug_sda_o       = sda_f_d;
-
-  always_ff @(posedge PCLK or negedge PRESETn) begin : p_debug
+  always_ff @(posedge PCLK or negedge PRESETn) begin : p_status
     if (!PRESETn) begin
       debug_bus_busy_o    <= 1'b0;
-      debug_bus_free_o    <= 1'b0;
-      debug_start_o       <= 1'b0;
-      debug_stop_o        <= 1'b0;
-      debug_bit_cnt_o     <= 4'd0;
       debug_ctrl_active_o <= 1'b0;
       debug_ctrl_hold_o   <= 1'b0;
-      debug_ctrl_state_o  <= 4'd0;
       debug_tgt_active_o  <= 1'b0;
-      debug_tgt_rw_o      <= 1'b0;
       debug_tgt_hold_o    <= 1'b0;
-      debug_tgt_state_o   <= 3'd0;
-      debug_cmd_lvl_o     <= 6'd0;
-      debug_crx_lvl_o     <= 6'd0;
-      debug_ttx_lvl_o     <= 6'd0;
-      debug_trx_lvl_o     <= 6'd0;
-      debug_dma_state_o   <= 2'd0;
       debug_dma_sel_o     <= 2'd0;
       debug_intr_stat_o   <= 22'd0;
     end else begin
       debug_bus_busy_o    <= bus_busy;
-      debug_bus_free_o    <= bus_free;
-      debug_start_o       <= start_det;
-      debug_stop_o        <= stop_det;
-      debug_bit_cnt_o     <= bit_cnt;
       debug_ctrl_active_o <= ctrl_owner | ctrl_busclr;
       debug_ctrl_hold_o   <= ctrl_hold;
-      debug_ctrl_state_o  <= ctrl_state;
       debug_tgt_active_o  <= tgt_active;
-      debug_tgt_rw_o      <= tgt_rw;
       debug_tgt_hold_o    <= tgt_hold;
-      debug_tgt_state_o   <= tgt_state;
-      debug_cmd_lvl_o     <= cmd_lvl;
-      debug_crx_lvl_o     <= crx_lvl;
-      debug_ttx_lvl_o     <= ttx_lvl;
-      debug_trx_lvl_o     <= trx_lvl;
-      debug_dma_state_o   <= dma_state;
       debug_dma_sel_o     <= dma_sel;
       debug_intr_stat_o   <= intr_stat;
     end

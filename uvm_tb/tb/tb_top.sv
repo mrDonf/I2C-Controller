@@ -6,7 +6,7 @@
 //   I2C  : I2C VIP interface (tri1 SCL/SDA, VIP master / slaves)            <-> DUT open-drain pads
 //          + bit-bang / fault-injection pull-downs (i2c_bb_if)
 //   DMA  : i2c_ip_dma_if (DMAC model)                                       <-> DUT dma_req / dma_ack / dma_end
-//   side : i2c_ip_side_if (irq_*, hs_mode_o, scl_cs_en_o, debug_*)          <-  DUT
+//   side : i2c_ip_side_if (irq_*, hs_mode_o, scl_cs_en_o, debug_* status)   <-  DUT (+ bus lines)
 //   SVA  : i2c_ip_sva on the DUT ports
 //
 //   Compile-time knobs: +define+FIFO_DEPTH=<4|8|16|32> (default 16)
@@ -85,31 +85,18 @@ module tb_top;
     .dma_end_req_i       (dmaif.end_req),
     .dma_end_ack_o       (dmaif.end_ack),
     .debug_bus_busy_o    (sideif.d_bus_busy),
-    .debug_bus_free_o    (sideif.d_bus_free),
-    .debug_hs_active_o   (sideif.d_hs_active),
-    .debug_scl_o         (sideif.d_scl),
-    .debug_sda_o         (sideif.d_sda),
-    .debug_start_o       (sideif.d_start),
-    .debug_stop_o        (sideif.d_stop),
-    .debug_bit_cnt_o     (sideif.d_bit_cnt),
     .debug_ctrl_active_o (sideif.d_ctrl_active),
     .debug_ctrl_hold_o   (sideif.d_ctrl_hold),
-    .debug_ctrl_state_o  (sideif.d_ctrl_state),
     .debug_tgt_active_o  (sideif.d_tgt_active),
-    .debug_tgt_rw_o      (sideif.d_tgt_rw),
     .debug_tgt_hold_o    (sideif.d_tgt_hold),
-    .debug_tgt_state_o   (sideif.d_tgt_state),
-    .debug_cmd_lvl_o     (sideif.d_cmd_lvl),
-    .debug_crx_lvl_o     (sideif.d_crx_lvl),
-    .debug_ttx_lvl_o     (sideif.d_ttx_lvl),
-    .debug_trx_lvl_o     (sideif.d_trx_lvl),
-    .debug_dma_state_o   (sideif.d_dma_state),
     .debug_dma_sel_o     (sideif.d_dma_sel),
     .debug_intr_stat_o   (sideif.d_intr_stat)
   );
 
-  assign sideif.scl_oe = scl_oe;
-  assign sideif.sda_oe = sda_oe;
+  assign sideif.scl_oe  = scl_oe;
+  assign sideif.sda_oe  = sda_oe;
+  assign sideif.bus_scl = i2cif.scl;
+  assign sideif.bus_sda = i2cif.sda;
 
   // ---------------------------------------------------------------- port-level assertions
   i2c_ip_sva u_sva (
@@ -120,9 +107,9 @@ module tb_top;
     .irq_o (sideif.irq), .irq_ctrl_o (sideif.irq_ctrl), .irq_tgt_o (sideif.irq_tgt), .irq_err_o (sideif.irq_err),
     .dma_req_o (dmaif.req), .dma_req_type_o (dmaif.req_type), .dma_ack_i (dmaif.ack), .dma_ack_type_i (dmaif.ack_type),
     .dma_end_req_i (dmaif.end_req), .dma_end_ack_o (dmaif.end_ack),
-    .debug_intr_stat_o (sideif.d_intr_stat), .debug_scl_o (sideif.d_scl), .debug_sda_o (sideif.d_sda),
-    .debug_bus_busy_o (sideif.d_bus_busy), .debug_ctrl_active_o (sideif.d_ctrl_active),
-    .debug_tgt_hold_o (sideif.d_tgt_hold), .debug_cmd_lvl_o (sideif.d_cmd_lvl)
+    .debug_intr_stat_o (sideif.d_intr_stat), .debug_bus_busy_o (sideif.d_bus_busy),
+    .debug_ctrl_active_o (sideif.d_ctrl_active), .debug_ctrl_hold_o (sideif.d_ctrl_hold),
+    .debug_tgt_active_o (sideif.d_tgt_active), .debug_tgt_hold_o (sideif.d_tgt_hold), .debug_dma_sel_o (sideif.d_dma_sel)
   );
 
   // ---------------------------------------------------------------- UVM

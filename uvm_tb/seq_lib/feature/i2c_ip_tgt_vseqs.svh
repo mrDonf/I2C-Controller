@@ -322,14 +322,18 @@ class i2c_tgt_stretch_vseq extends i2c_ip_tgt_base_vseq;
         done = 1;
       end
       begin
-        wait (side.d_trx_lvl >= depth - 1);
+        wait_lvl(3, depth - 1);
         #(sw_delay_us * 1us);                                // slow software: the target must hold SCL
         chk(p_sequencer.side.seen_tgt_hold && side.d_tgt_hold === 1'b1, "target stretches while TRX lacks 2 free entries");
         chk_rd(R_STATUS, 32'h0000_0020, 32'h0000_0020, "STATUS.TGT_HOLD");
         chk(bus.scl === 1'b0, "SCL held low by the target");
-        while (!done || side.d_trx_lvl != 0) begin
+        forever begin
           bit [31:0] v;
-          if (side.d_trx_lvl != 0) begin rd(R_TRXDATA, v); got++; end
+          int unsigned lvl;
+          bit fin = done;
+          rd_field(R_FIFO_STAT, 24, 6, lvl);
+          if (lvl == 0 && fin) break;
+          if (lvl != 0) begin rd(R_TRXDATA, v); got++; end
           #(15us);
         end
       end

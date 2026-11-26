@@ -78,7 +78,7 @@ package apb_i2c_pkg;
   localparam logic [1:0] TAG_RSTART = 2'b11;
 
   //---------------------------------------------------------------------------
-  // FSM encodings (= debug_ctrl_state_o / debug_tgt_state_o, spec 3.5)
+  // FSM encodings (controller spec 4.4.11, target spec 4.5.8)
   //---------------------------------------------------------------------------
   typedef enum logic [3:0] {
     C_IDLE    = 4'd0,
@@ -103,7 +103,7 @@ package apb_i2c_pkg;
     T_WAIT  = 3'd7
   } tgt_state_t;
 
-  // DMA handshake states (= debug_dma_state_o; bit 0 is the request itself)
+  // DMA handshake states (spec 4.9.3; bit 0 is the request itself)
   typedef enum logic [1:0] {
     D_IDLE = 2'b00,
     D_REQ  = 2'b01,

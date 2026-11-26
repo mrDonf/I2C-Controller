@@ -339,25 +339,33 @@ class i2c_filter_spk_vseq extends i2c_ip_base_vseq;
   bit               en = 1;            // the filter also runs with EN = 0 (4.10)
   constraint c_def { soft spk == 5; spk inside {[2:20]}; }
 
-  // pulse a line low for w ns on an idle bus; returns whether debug_scl_o / debug_sda_o followed and the delay
+  realtime poll_max;                   // longest interval between two BUSMON samples
+
+  // pulse a line low for w ns on an idle bus; returns whether BUSMON.SCL_F / SDA_F followed and the delay
+  // (time of the first read that returned 0, polling BUSMON back to back)
   task pulse(bit sda_line, real w, output bit seen, output realtime dly);
-    realtime t0;
-    seen = 0; dly = 0;
-    fork begin
-      fork
-        begin
-          if (sda_line) bb(BB_GLITCH_SDA, 0, w); else bb(BB_GLITCH_SCL, 0, w);
-          #(500ns);
+    realtime t0, tp;
+    bit stop;
+    seen = 0; dly = 0; stop = 0;
+    fork
+      begin
+        t0 = $realtime;
+        if (sda_line) bb(BB_GLITCH_SDA, 0, w); else bb(BB_GLITCH_SCL, 0, w);
+        #(500ns);
+        stop = 1;
+      end
+      begin
+        bit [31:0] v;
+        #(1ps);
+        tp = $realtime;
+        while (!stop) begin
+          rd(R_BUSMON, v);
+          if ($realtime - tp > poll_max) poll_max = $realtime - tp;
+          tp = $realtime;
+          if (!seen && v[sda_line ? 1 : 0] === 1'b0) begin seen = 1; dly = $realtime - t0; end
         end
-        begin
-          t0 = $realtime;
-          if (sda_line) wait (side.d_sda === 1'b0); else wait (side.d_scl === 1'b0);
-          seen = 1; dly = $realtime - t0;
-          wait (0);
-        end
-      join_any
-      disable fork;
-    end join
+      end
+    join
   endtask
 
   task main();
@@ -375,9 +383,10 @@ class i2c_filter_spk_vseq extends i2c_ip_base_vseq;
       chk(!seen, $sformatf("%s %s spike of %0d cycles filtered", what, l ? "SDA" : "SCL", spk - 1));
       pulse(l, (spk + 2) * T + 5, seen, d);
       chk(seen, $sformatf("%s %s pulse of %0d cycles passes", what, l ? "SDA" : "SCL", spk + 2));
-      // pad -> debug_x_o: LAT = SPKLEN + 3 cycles to x_f, +1 cycle for the debug flop (3.5), +1 cycle sampling
-      chk(d >= (spk + 3) * T * 1ns && d <= (spk + 5) * T * 1ns,
-          $sformatf("%s %s latency %0.0f ns within (SPKLEN+3..SPKLEN+5) T", what, l ? "SDA" : "SCL", d / 1ns));
+      // pad -> x_f: LAT = SPKLEN + 3 cycles (4.2), seen by the first BUSMON read after it: + up to one poll interval
+      chk(d >= (spk + 3) * T * 1ns && d <= (spk + 4) * T * 1ns + poll_max,
+          $sformatf("%s %s latency %0.0f ns within SPKLEN+3 T .. SPKLEN+4 T + poll interval %0.0f ns",
+                    what, l ? "SDA" : "SCL", d / 1ns, poll_max / 1ns));
     end
     wr(R_CTRL, 32'h0);
     reg_wr(ral.FILTER, f0);
@@ -479,7 +488,7 @@ class i2c_bus_busy_vseq extends i2c_ip_base_vseq;
     chk_rd(R_STATUS, 1, 1, "BUS_BUSY 5 us after enable (IDLE_VAL = 10 us)");
     #(8us);
     chk_rd(R_STATUS, 0, 1, "bus free after the idle detection");
-    // external transaction: busy between S and P, bus_free only after TBUF (debug_bus_free_o)
+    // external transaction: busy between S and P (bus free only after TBUF: DUT START check below)
     fork
       ext_write(7'h50, '{8'h00, 8'h01}, ok);
       begin
@@ -487,11 +496,11 @@ class i2c_bus_busy_vseq extends i2c_ip_base_vseq;
         chk_rd(R_STATUS, 1, 1, "BUS_BUSY during an external transaction");
         @(posedge bus.sda iff bus.scl === 1'b1);
         t_stop = $realtime;
-        wait (side.d_bus_free === 1'b1);
+        wait (side.d_bus_busy === 1'b0);
         t_free = $realtime;
       end
     join
-    chk(t_free - t_stop >= tm.tbuf * T * 1ns, $sformatf("bus_free %0.0f ns after STOP >= TBUF %0.0f ns", (t_free - t_stop) / 1ns, tm.tbuf * T));
+    chk(t_free - t_stop < 20 * T * 1ns, $sformatf("debug_bus_busy_o falls %0.0f ns after STOP", (t_free - t_stop) / 1ns));
     chk_rd(R_STATUS, 0, 1, "BUS_BUSY = 0 after STOP");
     // DUT controller START waits TBUF after an external STOP
     wr(R_CTRL, 32'h3);
@@ -599,7 +608,7 @@ class i2c_swrst_active_vseq extends i2c_ip_base_vseq;
   task main();
     quiet();
     push_cmds('{c_start(7'h50, 0), c_wr(8'h01), c_wr(8'h02), c_wr(8'h03), c_wr(8'h04, 1)});
-    wait (side.d_bit_cnt == at_bit && side.d_ctrl_active === 1'b1);
+    wait (side.b_bit_cnt == at_bit && side.d_ctrl_active === 1'b1);
     wr(R_CTRL, 32'h8000_0000);
     wait_cycles(3);
     chk(side.scl_oe === 1'b0 && side.sda_oe === 1'b0, "SWRST releases SCL/SDA immediately");
@@ -620,7 +629,10 @@ class i2c_en_ctrl_vseq extends i2c_ip_base_vseq;
     int unsigned lvl;
     quiet();
     push_cmds('{c_start(7'h50, 0), c_wr(8'h01), c_wr(8'h02), c_wr(8'h03), c_wr(8'h04), c_wr(8'h05), c_wr(8'h06, 1)});
-    wait (side.d_cmd_lvl <= 4 && side.d_ctrl_active === 1'b1);
+    do begin
+      wait (side.d_ctrl_active === 1'b1);
+      rd_field(R_FIFO_STAT, 0, 6, lvl);
+    end while (lvl > 4);
     wr(R_CTRL, 32'h0);
     wait_cycles(3);
     chk(side.scl_oe === 1'b0 && side.sda_oe === 1'b0, "EN = 0 releases SCL/SDA");

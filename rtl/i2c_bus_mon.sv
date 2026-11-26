@@ -28,8 +28,7 @@ module i2c_bus_mon (
   output logic        hs_active,
   output logic        hs_det,         // 1-cycle pulse
   output logic        bus_err,        // 1-cycle pulse
-  output logic        scl_tout,       // 1-cycle pulse
-  output logic [3:0]  bit_cnt         // SCL rising edges since START / last ACK clock
+  output logic        scl_tout        // 1-cycle pulse
 );
 
   import apb_i2c_pkg::min1;
@@ -115,7 +114,6 @@ module i2c_bus_mon (
   end
 
   assign bus_err = ~busclr_active & r_bit_valid & (start_det | stop_det) & (r_bit_cnt >= 4'd2);
-  assign bit_cnt = r_bit_cnt;
 
   //---------------------------------------------------------------------------
   // Hs-mode detection: the first byte after a START in F/S mode is checked

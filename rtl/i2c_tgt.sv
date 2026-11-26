@@ -74,8 +74,7 @@ module i2c_tgt
   output logic        active,
   output logic        rw,
   output logic        hold,
-  output logic [10:0] tstat,
-  output tgt_state_t  state
+  output logic [10:0] tstat
 );
 
   typedef enum logic [2:0] {
@@ -540,6 +539,5 @@ module i2c_tgt
   assign rw     = r_rw;
   assign hold   = st_hold;
   assign tstat  = {r_devid_armed, r_addr1_hit, r_gc, r_rw, r_match_addr};
-  assign state  = r_state;
 
 endmodule

@@ -72,7 +72,6 @@ module i2c_ctrl
   output logic             owner,
   output logic             busclr_active,
   output logic             hold,
-  output ctrl_state_t      state,
   // handshakes to CSR
   output logic             abort_clr,
   output logic             busclr_clr,
@@ -644,7 +643,6 @@ module i2c_ctrl
   assign owner         = own_bus;
   assign busclr_active = busclr;
   assign hold          = st_low & (r_action == N_WAIT) & own_bus;
-  assign state         = r_state;
 
   // Hs-mode current-source pull-up: only while this controller has released
   // SCL; on the first rising edge after Sr / ACK wait until SCL is high.

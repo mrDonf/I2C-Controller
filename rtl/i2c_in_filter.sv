@@ -3,8 +3,6 @@
 //   2-FF synchronizer + glitch (spike) filter + edge detection (spec 4.2).
 //   Pulses of width <= spklen PCLK cycles are suppressed.
 //   Latency pad -> dout : spklen + 3 cycles.
-//   dout_d is dout delayed by one cycle (also used as the registered debug
-//   copy of the filtered line).
 //-----------------------------------------------------------------------------
 module i2c_in_filter (
   input  logic       clk,
@@ -12,7 +10,6 @@ module i2c_in_filter (
   input  logic       din,      // asynchronous pad input
   input  logic [7:0] spklen,
   output logic       dout,     // filtered level
-  output logic       dout_d,   // filtered level, delayed by 1 cycle
   output logic       rise,     // 1-cycle pulse: dout 0 -> 1
   output logic       fall      // 1-cycle pulse: dout 1 -> 0
 );
@@ -57,7 +54,7 @@ module i2c_in_filter (
   end
 
   //---------------------------------------------------------------------------
-  // Delayed copy and edges
+  // Edges
   //---------------------------------------------------------------------------
   logic r_filt_d;
 
@@ -67,7 +64,6 @@ module i2c_in_filter (
   end
 
   assign dout   = r_filt;
-  assign dout_d = r_filt_d;
   assign rise   =  r_filt & ~r_filt_d;
   assign fall   = ~r_filt &  r_filt_d;
 

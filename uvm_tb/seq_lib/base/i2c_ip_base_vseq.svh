@@ -119,6 +119,16 @@ class i2c_ip_base_vseq extends uvm_sequence;
     v = (d >> lsb) & ((1 << width) - 1);
   endtask
 
+  // poll FIFO_STAT until the level of FIFO f (0 CMD, 1 CRX, 2 TTX, 3 TRX) is >= n
+  task wait_lvl(int f, int unsigned n, int unsigned gap = 10);
+    int unsigned l;
+    forever begin
+      rd_field(R_FIFO_STAT, 8 * f, 6, l);
+      if (l >= n) break;
+      repeat (gap) @(posedge side.clk);
+    end
+  endtask
+
   // register model front-door (named registers)
   task reg_wr(uvm_reg r, uvm_reg_data_t v);
     uvm_status_e st;

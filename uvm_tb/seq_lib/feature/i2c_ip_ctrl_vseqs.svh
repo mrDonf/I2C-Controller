@@ -154,7 +154,7 @@ class i2c_ctrl_crx_full_vseq extends i2c_ip_base_vseq;
     fork
       push_cmds(c);
       begin
-        wait (side.d_crx_lvl == depth);
+        wait_lvl(1, depth);
         chk_rd(R_STATUS, 32'h0000_0400, 32'h0000_0400, "STATUS.CRX_FULL");
         #(60us);                                             // software late: the controller must wait
         chk_rd(R_FIFO_STAT, depth << 8, 32'h3F << 8, "CRX level stays FIFO_DEPTH (no overflow)");
@@ -379,7 +379,7 @@ class i2c_ctrl_abort_vseq extends i2c_ip_base_vseq;
       end
       AB_READ_ADDR: begin                                    // ABORT during the address byte of a read: after the
         push_cmds('{c_start(7'h50, 1), c_rd(), c_rd(0, 1)}); // address ACK one dummy byte with NACK, then STOP
-        wait (side.d_bit_cnt == 3 && side.d_ctrl_active === 1'b1);
+        wait (side.b_bit_cnt == 3 && side.d_ctrl_active === 1'b1);
         wr(R_CTRL, 32'h0001_0003);
         wait_cmpl(7'h08, "abort in the read address byte");
         begin
@@ -391,7 +391,7 @@ class i2c_ctrl_abort_vseq extends i2c_ip_base_vseq;
       end
       AB_READ_INFLIGHT: begin                                // abort forces the NACK of the current byte or a dummy read
         push_cmds('{c_start(7'h50, 1), c_rd(), c_rd(), c_rd(), c_rd()});
-        wait (side.d_crx_lvl == 1);
+        wait_lvl(1, 1);
         wr(R_CTRL, 32'h0001_0003);
         wait_cmpl(7'h08, "abort in flight");
         begin

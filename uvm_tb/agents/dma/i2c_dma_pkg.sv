@@ -76,6 +76,7 @@ package i2c_dma_pkg;
     int unsigned end_hold_max = 2;     // END_HS: extra cycles end_req stays 1 after end_ack
     bit          no_deny     = 0;      // DMAC without DENY: requests of a stopped channel stay pending
     bit          ack_after_withdraw = 0;   // serve (and late-ack) a request withdrawn while the DMAC arbitrated
+    int unsigned late_ack_hold = 0;    // extra cycles a late ack (req already 0) stays 1
     function new(string name = "i2c_dma_cfg"); super.new(name); endfunction
   endclass : i2c_dma_cfg
 
@@ -184,6 +185,7 @@ package i2c_dma_pkg;
         dma_req_e  rt;
         dma_ack_e  at;
         int unsigned n;
+        bit        late;
         i2c_dma_op o;
         do @(cfg.vif.drv_cb); while (cfg.vif.drv_cb.req !== 1'b1);
         rt = dma_req_e'(cfg.vif.drv_cb.req_type);
@@ -197,7 +199,8 @@ package i2c_dma_pkg;
           while ((o == null || o.stop || o.done) && cfg.vif.drv_cb.req === 1'b1) begin @(cfg.vif.drv_cb); o = op; end
           if (cfg.vif.drv_cb.req !== 1'b1 && !cfg.ack_after_withdraw) begin n_withdrawn++; continue; end
         end
-        if (cfg.vif.drv_cb.req !== 1'b1) n_late_ack++;
+        late = (cfg.vif.drv_cb.req !== 1'b1);
+        if (late) n_late_ack++;
         n = 0;
         if (o == null || o.stop || o.done) begin
           at = DMA_DENY;
@@ -229,6 +232,7 @@ package i2c_dma_pkg;
         cfg.vif.drv_cb.ack      <= 1'b1;
         cfg.vif.drv_cb.ack_type <= at;
         do @(cfg.vif.drv_cb); while (cfg.vif.drv_cb.req !== 1'b0);      // hold ack until req = 0 (rule 3)
+        if (late) repeat (cfg.late_ack_hold) @(cfg.vif.drv_cb);
         cfg.vif.drv_cb.ack      <= 1'b0;
         cfg.vif.drv_cb.ack_type <= 2'b00;
         @(cfg.vif.drv_cb);

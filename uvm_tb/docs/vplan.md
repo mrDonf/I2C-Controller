@@ -58,7 +58,7 @@ knob của test, hook `randomize_init()`) → `main_phase` (`run_scenario()`) �
 | F17 Ngắt | INT-01..03, CTL-04, CTL-08, FIFO-04/05, TGT-01 |
 | F18 DMA | DMA-01..13 (DMA-12: handshake kết thúc; DMA-13: rút request / DMAC không có DENY); BUS-11 (SWRST với `DMA_STAT.END`, `END_EN`) |
 | F19 Bus monitor / override | BUS-09, BUS-05 |
-| F20 Cổng debug | quan sát trong mọi test (side monitor); BUS-08 (độ trễ `debug_scl_o` / `debug_sda_o`) |
+| F20 Cổng trạng thái `debug_*` | quan sát trong mọi test (side monitor: `debug_intr_stat_o` → event ngắt, `debug_ctrl_active_o` → scoreboard, `debug_*_hold_o`); BUS-10 (`debug_bus_busy_o`); SVA (`irq_*` = `debug_intr_stat_o` & `INTR_EN`, giá trị reset) |
 | 1.4 không hỗ trợ: 10-bit, CBUS, HW general call | TGT-13, TGT-12, TGT-11 (chỉ kiểm hành vi đã định nghĩa: NACK / dữ liệu thường) |
 
 ## 4. VP item → testcase → sequence
@@ -253,7 +253,7 @@ không có, DMAC không có `DENY`, DMAC không có `LAST_OKAY`, ack muộn sau 
 | VP ID | Kịch bản | Mục spec |
 |---|---|---|
 | DMA-12 | Kết thúc 4 pha sau `LAST_OKAY` với `END_EN = 0`: ack trễ 1 chu kỳ, chỉ set `DMA_STAT.END`, không thêm `DMA_DONE`; `END_EN = 0` khi `EN = 1`: kênh vẫn bật; DMAC không có `LAST_OKAY` + xung terminal count, `END_EN = 1`: `OKAY` cuối không hoàn tất, xung kết thúc hoàn tất; sự kiện kết thúc khi đang có request (DMAC không DENY): request được giữ tới `CLR`; `END_EN = 1` nhưng `EN = 0`: chỉ ghi nhận; khóa `END_EN` khi `EN = 1` | 4.9.6, 5.2.22, 5.2.24 |
-| DMA-13 | DMAC không có `DENY`: request treo vô hạn, cấu hình bị khóa, `CLR` rút request ở chu kỳ sau (`EN = 0` và `EN = 1` — phát lại khi về IDLE), `CLR` ở IDLE không tác dụng; DMAC vẫn phục vụ khi request bị rút: phần tử vào FIFO, ack muộn bị bỏ qua (không `DONE`), `debug_dma_state_o = 2` chờ ack về 0; `ack` và `CLR` cùng chu kỳ: `ack` thắng (`DENY` được xử lý) | 4.9.3, 4.9.7, 7.2 |
+| DMA-13 | DMAC không có `DENY`: request treo vô hạn, cấu hình bị khóa, `CLR` rút request ở chu kỳ sau (`EN = 0` và `EN = 1` — phát lại khi về IDLE), `CLR` ở IDLE không tác dụng; DMAC vẫn phục vụ khi request bị rút: phần tử vào FIFO, ack muộn bị bỏ qua (không `DONE`), handshake chờ ack về 0 (`DMA_STAT.BUSY = 1`, `REQ = 0`); `ack` và `CLR` cùng chu kỳ: `ack` thắng (`DENY` được xử lý); `CLR` với `EN = 1` và ack muộn ở chu kỳ IDLE đầu tiên: chuyển sang ACK ưu tiên hơn request mới, `ack_type` không xử lý, request phát lại sau `ack = 0` | 4.9.3, 4.9.7, 7.2 |
 | DMA-10 | Mỗi operation chọn ngẫu nhiên kiểu kết thúc của DMAC (4 pha / xung / không có) với `END_EN = 0` | 4.9.6 |
 
 Kiểm độ nhạy (mutation trên `i2c_dma_ch`): bỏ qua `CLR`, `CLR` thắng `ack`, không chờ ack muộn ở IDLE, hoàn tất

@@ -187,7 +187,7 @@ class i2c_ip_coverage extends uvm_component;
     off = t.addr[11:0] & 12'hFFC; apb_wr = t.write; apb_err = t.slverr; apb_strb = t.strb;
     cg_apb.sample();
     if (t.slverr) return;
-    if (t.write && off == R_DMA_CTRL && t.strb[0] && side_vif.d_dma_state == 0) dma_end_en = t.data[2];
+    if (t.write && off == R_DMA_CTRL && t.strb[0] && !cfg.dma_cfg.vif.hs_busy) dma_end_en = t.data[2];
     if (t.write && off == R_CMD && t.strb != 0) begin cmd = t.strobed_data(); cg_cmd.sample(); end
     if (!t.write && off == R_TRXDATA) begin trx_tag = t.data[9:8]; cg_trx.sample(); end
     if (!t.write && off == R_CRXDATA) begin crx_last = t.data[8]; cg_crx.sample(); end
