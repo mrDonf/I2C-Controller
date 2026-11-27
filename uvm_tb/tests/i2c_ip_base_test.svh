@@ -91,7 +91,7 @@ class i2c_ip_base_test extends uvm_test;
     cfg.apb_cfg = apb_agent_cfg::type_id::create("apb_cfg");
     if (!uvm_config_db #(apb_vif_t)::get(this, "", "apb_vif", cfg.apb_cfg.vif))        `uvm_fatal("TEST", "no apb_vif")
     cfg.apb_cfg.role = VIP_MASTER;
-    cfg.apb_cfg.timeout_cycles = 16;                                                   // PREADY is always 1 (zero wait)
+    cfg.apb_cfg.timeout_cycles = 16;   // PREADY = QACCEPTn: zero wait state unless the Q-Channel is stopped (Q-Channel tests raise it)
     cfg.apb_cfg.coverage_en = 0;                                                       // IP coverage: i2c_ip_coverage.cg_apb
 
     // I2C: VIP master + two VIP slaves (EEPROM models)
@@ -109,6 +109,11 @@ class i2c_ip_base_test extends uvm_test;
     cfg.bb_cfg.bus = v;
     cfg.dma_cfg = i2c_dma_cfg::type_id::create("dma_cfg");
     if (!uvm_config_db #(virtual i2c_ip_dma_if)::get(this, "", "dma_vif", cfg.dma_cfg.vif)) `uvm_fatal("TEST", "no dma_vif")
+
+    // LPI clock controller: QREQn reset level = DUT parameter, leaves Q_STOPPED after reset, wakes on QACTIVE
+    cfg.qch_cfg = i2c_qch_cfg::type_id::create("qch_cfg");
+    if (!uvm_config_db #(virtual i2c_ip_qch_if)::get(this, "", "qch_vif", cfg.qch_cfg.vif)) `uvm_fatal("TEST", "no qch_vif")
+    cfg.qch_cfg.qreqn_rst = cfg.p.qreqn_rst;
 
     cfg.set_vip_speed(SPD_FM);
     configure_env();

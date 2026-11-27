@@ -6,7 +6,8 @@ class i2c_ip_tb_params extends uvm_object;
   `uvm_object_utils(i2c_ip_tb_params)
   int unsigned fifo_depth = 16;
   bit [23:0]   devid_rst  = 24'h0;
-  bit [31:0]   version    = 32'h0002_0100;
+  bit [31:0]   version    = 32'h0002_0200;
+  bit          qreqn_rst  = 1'b1;          // QREQN_RST (Q-Channel reset state, spec 3.8)
   real         pclk_ns    = 10.0;
   function new(string name = "i2c_ip_tb_params"); super.new(name); endfunction
 endclass : i2c_ip_tb_params
@@ -22,6 +23,7 @@ class i2c_ip_env_cfg extends uvm_object;
   i2c_agent_cfg  i2c_slv_cfg[$];       // VIP slaves (external targets for the DUT controller)
   i2c_bb_cfg     bb_cfg;
   i2c_dma_cfg    dma_cfg;
+  i2c_qch_cfg    qch_cfg;              // LPI clock controller (Q-Channel)
   side_vif_t     side_vif;
   virtual vip_clk_rst_if crif;
 

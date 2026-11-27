@@ -11,7 +11,8 @@ trong `run_scenario()`: tuần tự, song song (`fork`), randomize kèm inline c
 |---|---|
 | Kiểm tra theo spec (black-box) | Kỳ vọng chỉ suy ra từ đặc tả (bảng thanh ghi, timing 4.4.2, ví dụ DMA 4.9.4, quy trình mục 6). Từ RTL chỉ dùng danh sách port (mục 3). |
 | Scoreboard / reference model | CMD → bus → CRX, bus → TRX (tag), TTX → bus, Device ID, bảng giải mã địa chỉ 4.5.1, luật APB (PSLVERR, đọc 0) — kiểm mọi message trong mọi test. |
-| SVA (mức port) | R3, R8 (handshake request DMA, rút request bằng `DMA_CTRL.CLR`, `dma_end_ack_o` = `dma_end_req_i` trễ 1 chu kỳ), timing IRQ 4.8.1, giá trị reset 6.1.1, nhả bus khi `EN = 0`, không có X trên output. |
+| SVA (mức port) | R3, R8 (handshake request DMA, rút request bằng `DMA_CTRL.CLR`, `dma_end_ack_o` = `dma_end_req_i` trễ 1 chu kỳ), R9 (giao thức Q-Channel, `PREADY = QACCEPTn`, chỉ chấp nhận khi rảnh, reset theo `QREQN_RST`), timing IRQ 4.8.1, giá trị reset 6.1.1, nhả bus khi `EN = 0`, không có X trên output. Các SVA chạy trên PCLK đã gate của DUT. |
+| LPI clock controller | Agent `agents/qch` (`i2c_qch_ctrl`): mô hình clock controller + ICG (`tb/i2c_ip_qch_if.sv`) — yêu cầu dừng, gate PCLK, tự đánh thức khi `QACTIVE` (độ trễ ngẫu nhiên), phân loại nguồn đánh thức, kiểm tra thời gian đáp ứng và "chỉ chấp nhận khi rảnh". APB VIP, DMAC và VIP I2C chạy trên clock không gate (như bridge / DMAC ngoài miền clock). |
 | VIP monitor | Giao thức APB, giao thức I2C và timing UM10204 theo mode. |
 | Self-check trong sequence | Event `INTR_STAT`, `CSTAT`, `STATUS`, `TSTAT`, mức FIFO, danh sách entry TRX, bộ nhớ VIP slave, đo timing bus. |
 | Register model | `uvm_reg_hw_reset_seq`, `uvm_reg_bit_bash_seq`, mirror check (adapter dự đoán đúng ghi một phần byte lane). |
@@ -27,6 +28,7 @@ trong `run_scenario()`: tuần tự, song song (`fork`), randomize kèm inline c
 | L1 traffic | `seq_lib/xfer` | `i2c_ip_ctrl_xfer_vseq`, `i2c_ip_ctrl_cmd_vseq`, `i2c_ip_ext_xfer_vseq`, `i2c_ip_trx_collect_vseq`, `i2c_ip_ttx_service_vseq`, `i2c_ip_dma_start_vseq`, `i2c_ip_dma_check_vseq` |
 | L1 bus | `seq_lib/bus` | `i2c_ip_bb_arb_vseq`, `i2c_ip_bb_scl_stretch_vseq`, `i2c_ip_bb_glitch_vseq`, `i2c_ip_bb_hold_vseq`, `i2c_ip_bb_start_pulse_vseq`, `i2c_ip_bb_stop_block_vseq` |
 | L1 tiện ích | `seq_lib/util` | `i2c_ip_timing_meas_vseq`, `i2c_ip_recover_vseq`, `i2c_ip_presetn_vseq`, `i2c_ip_eot_vseq` |
+| L1 low power | `seq_lib/lp` | `i2c_ip_qch_cycle_vseq` (một chu trình dừng / giữ / thoát), `i2c_ip_qch_bg_vseq` (LPI controller nền: yêu cầu ngẫu nhiên song song traffic) |
 | L2 tính năng | `seq_lib/feature` | một vseq tự kiểm cho mỗi hạng mục (vd. `i2c_ctrl_abort_vseq`, `i2c_tgt_devid_vseq`) |
 | Random | `seq_lib/rand` | `i2c_rand_traffic_vseq`, `i2c_rand_reg_vseq`, `i2c_ip_ctrl_xfer_stretch_vseq` (dùng cho override) |
 | UVM chuẩn | `uvm_pkg` | `uvm_reg_hw_reset_seq`, `uvm_reg_bit_bash_seq` |
@@ -58,12 +60,13 @@ knob của test, hook `randomize_init()`) → `main_phase` (`run_scenario()`) �
 | F17 Ngắt | INT-01..03, CTL-04, CTL-08, FIFO-04/05, TGT-01 |
 | F18 DMA | DMA-01..13 (DMA-12: handshake kết thúc; DMA-13: rút request / DMAC không có DENY); BUS-11 (SWRST với `DMA_STAT.END`, `END_EN`) |
 | F19 Bus monitor / override | BUS-09, BUS-05 |
+| F21 Q-Channel (dừng PCLK) | QCH-01..08; SVA R9 trong mọi test; QCH-07 + 5 test hiện có trên build `QREQN_RST = 0` |
 | F20 Cổng trạng thái `debug_*` | quan sát trong mọi test (side monitor: `debug_intr_stat_o` → event ngắt, `debug_ctrl_active_o` → scoreboard, `debug_*_hold_o`); BUS-10 (`debug_bus_busy_o`); SVA (`irq_*` = `debug_intr_stat_o` & `INTR_EN`, giá trị reset) |
 | 1.4 không hỗ trợ: 10-bit, CBUS, HW general call | TGT-13, TGT-12, TGT-11 (chỉ kiểm hành vi đã định nghĩa: NACK / dữ liệu thường) |
 
 ## 4. VP item → testcase → sequence
 
-Cột *Regression*: `Nx dA,B` = N seed trên mỗi build FIFO_DEPTH A, B (`sim/regress.list`).
+Cột *Regression*: `Nx dA,B` = N seed trên mỗi build FIFO_DEPTH A, B (`sim/regress.list`); `q0` = thêm build `QREQN_RST = 0`.
 
 ### Thanh ghi / APB (F1, 3.1, 3.6, 3.7, 5)
 
@@ -199,6 +202,22 @@ Cột *Regression*: `Nx dA,B` = N seed trên mỗi build FIFO_DEPTH A, B (`sim/r
 | VP-RND-04 | `i2c_rand_stretch_test` | random traffic with random target clock stretching: factory type override of the controller transfer | `override: i2c_ip_ctrl_xfer_stretch_vseq` | 2x d4,16 |
 | VP-RND-05 | `i2c_rand_reconfig_test` | re-initialisation between bursts: random speed (Sm / Fm / Fm+), own addresses, IDLE_VAL, FIFO thresholds | `i2c_rand_traffic_vseq`, `i2c_ip_init_vseq`, `i2c_ip_fifo_thr_vseq` | 2x d4,16 |
 
+### Q-Channel / low power (F21; 3.8, 4.12, 6.17)
+
+| VP ID | Test | Nội dung kiểm tra (mục spec) | Sequence được test gọi | Regression |
+|---|---|---|---|---|
+| VP-QCH-01 | `i2c_qch_handshake_test` | IP rảnh: Q_RUN → Q_REQUEST → Q_STOPPED (`QACTIVE = 0`, không tự thức) → Q_EXIT do controller, với `CTRL.EN` 0 / 1, PCLK gate / không gate (4.12.5); truy cập sau khi thoát không có wait state; dừng lâu khi IP enable; `CTRL.EN = 0`: traffic trên bus không đánh thức (4.12.1 – 4.12.3) | `i2c_qch_handshake_vseq`, `i2c_ip_qch_cycle_vseq`, `i2c_ip_ctrl_xfer_vseq` | 2x d16, q0 |
+| VP-QCH-02 | `i2c_qch_deny_test` | QDENY khi bận: controller đang truyền, controller giữ SCL (CMD rỗng), target được địa chỉ hóa, bus bận bởi thiết bị khác, bus-idle detection sau enable, SCL bị kéo thấp khi đang dừng (đánh thức) rồi giữ thấp, request DMA đang chờ với `CTRL.EN = 0`; chấp nhận lại khi rảnh (4.12.1, 4.12.2) | `i2c_qch_deny_vseq`, `i2c_ip_qch_cycle_vseq` | 1x d4,16 |
+| VP-QCH-03 | `i2c_qch_apb_wake_test` | truy cập APB khi PCLK dừng: `QACTIVE` từ `PSEL`, wait state tới Q_RUN, ghi / đọc thanh ghi, push CMD / TTX và pop CRX / TRX đúng một lần, PSLVERR (offset không định nghĩa, đọc FIFO rỗng + FIFO_ERR); controller đánh thức nhanh và chậm (3.6, 4.12.4) | `i2c_qch_apb_wake_vseq` (2 lần) | 1x d4,16,32 |
+| VP-QCH-04 | `i2c_qch_bus_wake_test` | hoạt động bus khi PCLK dừng (`CTRL.EN = 1`): đánh thức trong ngân sách tHD;STA, target write / read / giao dịch giữa thiết bị khác, ở Sm, Fm+, Fm (4.12.3) | `i2c_ip_init_vseq`, `i2c_qch_bus_wake_vseq` (mỗi tốc độ) | 2x d4,16 |
+| VP-QCH-05 | `i2c_qch_ctrl_test` | transfer controller bắt đầu từ Q_STOPPED (lệnh CMD đầu tiên đánh thức), QDENY khi transfer đang chạy | `i2c_qch_ctrl_vseq`, `i2c_ip_ctrl_xfer_vseq`, `i2c_ip_qch_cycle_vseq` | 2x d16 |
+| VP-QCH-06 | `i2c_qch_dma_test` | `dma_end_req_i` (4 pha) đánh thức IP, `DMA_STAT.END`; DMA TRX (PFC) với PCLK dừng giữa các giao dịch khi `DMA_CTRL.EN = 1` (4.12.1 Q2, 4.12.3) | `i2c_qch_dma_vseq` (`i2c_ip_dma_start_vseq`, `i2c_ip_dma_check_vseq`), `i2c_ip_qch_cycle_vseq` | 1x d4,16,32 |
+| VP-QCH-07 | `i2c_qch_reset_test` | trạng thái reset theo `QREQN_RST` (Q_RUN / Q_STOPPED), truy cập đầu tiên từ Q_STOPPED, PRESETn khi đang dừng, hoạt động bình thường sau đó (3.8, 6.1.1) | `i2c_qch_reset_vseq` (`i2c_ip_presetn_vseq`), `i2c_ip_qch_cycle_vseq` | 1x d16, q0 |
+| VP-QCH-08 | `i2c_qch_rand_test` | traffic ngẫu nhiên controller / target theo từng đợt + LPI controller nền yêu cầu dừng ngẫu nhiên; scoreboard kiểm toàn bộ dữ liệu (+N_ITER) | `i2c_rand_traffic_vseq`, `i2c_ip_qch_bg_vseq` | 3x d4,16, q0 |
+
+Build `QREQN_RST = 0` (`q0`, LPI controller thoát Q_STOPPED sau reset) cũng chạy `i2c_reg_hw_reset_test`,
+`i2c_reg_presetn_test`, `i2c_ctrl_write_read_test`, `i2c_tgt_write_test`, `i2c_dma_trx_test`.
+
 ## 5. Review VP (bản này): corner case và random bổ sung
 
 | VP ID | Bổ sung | Lý do |
@@ -272,3 +291,5 @@ phóng bus khi target rơi đúng slot ACK ở clock STOP; phần mềm phải �
 | Arbitration giữa hai controller trong Hs-mode | bit-bang agent chạy timing F/S |
 | UFm, 10-bit, CBUS, bridge Hs | không hỗ trợ (1.4); chỉ kiểm hành vi NACK đã định nghĩa |
 | Formal, CDC, gate-level simulation | ngoài phạm vi môi trường UVM này (xem `specs/features_and_limitations.md`) |
+| Q-Channel: `QREQn` thực sự bất đồng bộ (metastability), glitch trên `QACTIVE` | mô hình clock controller chạy cùng clock nguồn với PCLK; CDC của `QREQn` / `QACTIVE` cần kiểm bằng công cụ CDC |
+| Vi phạm ngân sách đánh thức 4.12.3 (clock controller quá chậm) | hành vi khi đó không được đặc tả chi tiết (có thể bỏ lỡ START); không kiểm |

@@ -8,7 +8,8 @@
 //                         Device ID, address decode, APB access rules
 //   i2c_ip_coverage       functional coverage of the IP features
 //   i2c_ip_vsqr           virtual sequencer
-//   i2c_ip_env            APB VIP env + I2C VIP env + DMAC agent + bit-bang agent + RAL + model + coverage
+//   i2c_ip_env            APB VIP env + I2C VIP env + DMAC agent + bit-bang agent + Q-Channel agent + RAL + model
+//                         + coverage
 // -----------------------------------------------------------------------------
 `ifndef I2C_IP_ENV_PKG_SV
 `define I2C_IP_ENV_PKG_SV
@@ -22,6 +23,7 @@ package i2c_ip_env_pkg;
   import i2c_pkg::*;
   import i2c_dma_pkg::*;
   import i2c_bb_pkg::*;
+  import i2c_qch_pkg::*;
   import i2c_ip_ral_pkg::*;
 
   typedef virtual i2c_ip_side_if side_vif_t;

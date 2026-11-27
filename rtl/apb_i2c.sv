@@ -6,6 +6,10 @@
 //   2 TTX, 3 TRX): request handshake dma_req_o / dma_req_type_o / dma_ack_i /
 //   dma_ack_type_i and end handshake dma_end_req_i / dma_end_ack_o (the trigger
 //   input / trigger output pair of an Arm DMA-350 channel, spec 3.4).
+//
+//   Arm LPI Q-Channel (QREQn / QACCEPTn / QDENY / QACTIVE) for PCLK gating by
+//   an external clock controller (spec 3.8, 4.12). PREADY = QACCEPTn: an APB
+//   access while the channel is stopped waits until the clock is restored.
 //-----------------------------------------------------------------------------
 module apb_i2c
   import apb_i2c_pkg::*;
@@ -13,7 +17,8 @@ module apb_i2c
   parameter int          FIFO_DEPTH = 16,                // 4, 8, 16, 32
   parameter int          APB_AW     = 12,
   parameter logic [23:0] DEVID_RST  = 24'h000000,
-  parameter logic [31:0] VERSION    = 32'h0002_0100
+  parameter logic [31:0] VERSION    = 32'h0002_0200,
+  parameter logic        QREQN_RST  = 1'b1                // QREQn level during PRESETn
 ) (
   // APB4
   input  logic              PCLK,
@@ -55,7 +60,12 @@ module apb_i2c
   output logic              debug_tgt_active_o,
   output logic              debug_tgt_hold_o,
   output logic [1:0]        debug_dma_sel_o,
-  output logic [21:0]       debug_intr_stat_o
+  output logic [21:0]       debug_intr_stat_o,
+  // Arm LPI Q-Channel (clock gating of PCLK)
+  input  logic              QREQn,          // asynchronous
+  output logic              QACCEPTn,
+  output logic              QDENY,
+  output logic              QACTIVE         // asynchronous (combinational) hint
 );
 
   //---------------------------------------------------------------------------
@@ -140,6 +150,12 @@ module apb_i2c
   logic [IR_W-1:0] intr_stat;
   logic        scl_oe_nxt, sda_oe_nxt, cs_en_nxt;
 
+  // Q-Channel
+  logic        qch_run;         // QACCEPTn = 1
+  logic        qch_idle;        // core quiescent (APB access not included)
+  logic        r_qch_busy;
+  logic        apb_penable;
+
   function automatic logic [5:0] thr_clamp(input logic [5:0] v);
     return (v >= DEPTH6) ? (DEPTH6 - 6'd1) : v;
   endfunction
@@ -147,7 +163,11 @@ module apb_i2c
   //---------------------------------------------------------------------------
   // APB / CSR
   //---------------------------------------------------------------------------
-  assign PREADY = 1'b1;
+  //   Transfers complete only while the Q-Channel is not stopped: PREADY =
+  //   QACCEPTn, and the access strobe seen by the register file is qualified
+  //   by it so that a stretched access phase acts exactly once.
+  assign PREADY      = qch_run;
+  assign apb_penable = PENABLE & qch_run;
 
   i2c_regs #(
     .FIFO_DEPTH (FIFO_DEPTH),
@@ -157,7 +177,7 @@ module apb_i2c
     .PCLK           (PCLK),
     .PRESETn        (PRESETn),
     .PSEL           (PSEL),
-    .PENABLE        (PENABLE),
+    .PENABLE        (apb_penable),
     .PWRITE         (PWRITE),
     .PADDR          (PADDR),
     .PWDATA         (PWDATA),
@@ -554,5 +574,43 @@ module apb_i2c
       debug_intr_stat_o   <= intr_stat;
     end
   end
+
+  //---------------------------------------------------------------------------
+  // Arm LPI Q-Channel (spec 3.8, 4.12)
+  //   Quiescent: no APB access, DMA handshakes idle, no pending ABORT/BUSCLR,
+  //   controller / target not active or holding, and - when CTRL.EN = 1 -
+  //   bus idle with both filtered lines high and no command waiting for an
+  //   enabled controller. Nothing then changes until an APB access, a DMAC
+  //   handshake or bus activity, all of which drive QACTIVE.
+  //---------------------------------------------------------------------------
+  assign qch_idle = (dma_state == D_IDLE) & ~dma_end_req_i & ~dma_end_ack_o &
+                    ~abort_req & ~busclr_req &
+                    ~ctrl_owner & ~ctrl_busclr & ~ctrl_hold & ~tgt_active & ~tgt_hold &
+                    (~core_en | (~bus_busy & scl_f & sda_f & (~cfg_ctrl_en | cmd_empty)));
+
+  i2c_qch #(.QREQN_RST(QREQN_RST)) u_qch (
+    .clk        (PCLK),
+    .rst_n      (PRESETn),
+    .qreqn_i    (QREQn),
+    .idle       (qch_idle & ~PSEL),
+    .qacceptn_o (QACCEPTn),
+    .qdeny_o    (QDENY),
+    .run        (qch_run)
+  );
+
+  always_ff @(posedge PCLK or negedge PRESETn) begin : p_qch_busy
+    if (!PRESETn) r_qch_busy <= 1'b0;
+    else          r_qch_busy <= ~qch_idle;
+  end
+
+  // QACTIVE: registered "busy" plus the sources that must be seen while PCLK
+  // is stopped (no further clock edge needed):
+  //   - APB select, DMAC end request (asynchronous wake)
+  //   - DMA request / end acknowledge flops: the only state that can leave
+  //     idle by itself (DMA_CTRL.EN = 1 issues a request) on the accept edge
+  //   - while the channel is not running with CTRL.EN = 1: any bus line low
+  //     (a START or other bus activity to be tracked by the bus monitor)
+  assign QACTIVE = r_qch_busy | PSEL | dma_end_req_i | dma_req_o | dma_end_ack_o |
+                   (cfg_en & ~qch_run & ~(scl_i & sda_i));
 
 endmodule

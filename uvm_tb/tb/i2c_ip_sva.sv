@@ -2,7 +2,7 @@
 // i2c_ip_sva - port-level (black-box) assertions of apb_i2c, derived from the specification
 //
 //   ID               spec      rule
-//   SVA_PREADY       3.1/3.6   PREADY is always 1 (zero wait state)
+//   SVA_PREADY       3.1/3.6   PREADY = QACCEPTn (zero wait state unless the Q-Channel is stopped / exiting)
 //   SVA_RST_OUT      6.1.1     outputs at their reset value while PRESETn = 0
 //   SVA_CS_OE        3.2/R3    scl_cs_en_o and scl_oe_o never 1 together
 //   SVA_CS_HS        R3        scl_cs_en_o only in Hs-mode (hs_mode_o = 1)
@@ -17,6 +17,17 @@
 //   SVA_EN0_REL      4.1/4.10  CTRL.EN = 0: SCL/SDA released unless BUSMON override; override drives ~xxx_OVRD
 //   SVA_EN0_HS       4.3.4     CTRL.EN = 0: hs_mode_o = 0, scl_cs_en_o = 0
 //   SVA_NO_X         7.1       outputs never unknown after reset
+//   SVA_Q_RST        3.8       during PRESETn: QACCEPTn = QREQN_RST, QDENY = 0
+//   SVA_Q_ILLEGAL    4.12      never QACCEPTn = 0 with QDENY = 1
+//   SVA_Q_ACCEPT     4.12      QACCEPTn falls only in Q_REQUEST (QREQn = 0, QDENY = 0)
+//   SVA_Q_EXIT       4.12      QACCEPTn rises only with QREQn = 1 (Q_EXIT)
+//   SVA_Q_DENY       4.12      QDENY rises only in Q_REQUEST (QREQn = 0, QACCEPTn = 1)
+//   SVA_Q_CONT       4.12      QDENY falls only with QREQn = 1 (Q_CONTINUE)
+//   SVA_Q_IDLE       4.12      on accept the IP is quiescent: no DMA request / end acknowledge, controller and
+//                              target not active, bus not busy (debug_* status), no APB access in progress
+//   SVA_Q_NO_X       7.1       QACCEPTn / QDENY / QACTIVE never unknown after reset
+//
+//   PCLK is the gated clock of the DUT: the cycle-based rules count DUT clock cycles.
 //
 //   INTR_EN / CTRL.EN / BUSMON are mirrored from the APB pins (write takes effect at the end of the access phase,
 //   spec 3.6; SWRST clears CTRL.EN and keeps INTR_EN / BUSMON[10:8], spec 5.2.1).
@@ -26,7 +37,9 @@
 
 `include "uvm_macros.svh"
 
-module i2c_ip_sva (
+module i2c_ip_sva #(
+  parameter logic QREQN_RST = 1'b1
+) (
   input logic        PCLK,
   input logic        PRESETn,
   input logic        PSEL,
@@ -58,14 +71,18 @@ module i2c_ip_sva (
   input logic        debug_ctrl_hold_o,
   input logic        debug_tgt_active_o,
   input logic        debug_tgt_hold_o,
-  input logic [1:0]  debug_dma_sel_o
+  input logic [1:0]  debug_dma_sel_o,
+  input logic        QREQn,
+  input logic        QACCEPTn,
+  input logic        QDENY,
+  input logic        QACTIVE
 );
   import uvm_pkg::*;
 
   bit sva_en = 1'b1;               // tests may switch the checks off around deliberate protocol abuse
 
   // ---------------------------------------------------------------- APB register mirrors
-  wire        apb_wr = PSEL & PENABLE & PWRITE;
+  wire        apb_wr = PSEL & PENABLE & PWRITE & PREADY;          // write takes effect when PREADY = 1
   wire [9:0]  waddr  = PADDR[11:2];
   logic [21:0] en_sh;
   logic        ctrl_en_sh;
@@ -109,8 +126,8 @@ module i2c_ip_sva (
   default clocking cb @(posedge PCLK); endclocking
 
   // ---------------------------------------------------------------- APB
-  A_PREADY: assert property (@(posedge PCLK) disable iff (!sva_en) PREADY === 1'b1)
-    else fail("SVA_PREADY", "PREADY must always be 1");
+  A_PREADY: assert property (@(posedge PCLK) disable iff (!sva_en) PREADY === QACCEPTn)
+    else fail("SVA_PREADY", $sformatf("PREADY = %b must equal QACCEPTn = %b", PREADY, QACCEPTn));
 
   // ---------------------------------------------------------------- reset values (6.1.1)
   A_RST_OUT: assert property (@(posedge PCLK) disable iff (!sva_en)
@@ -185,6 +202,34 @@ module i2c_ip_sva (
   A_NO_X_RD: assert property (disable iff (!PRESETn || !sva_en) (PSEL && PENABLE && !PWRITE) |-> !$isunknown(PRDATA))
     else fail("SVA_NO_X", "PRDATA unknown during a read");
 
+  // ---------------------------------------------------------------- Q-Channel (3.8, 4.12)
+  A_Q_RST: assert property (@(posedge PCLK) disable iff (!sva_en) !PRESETn |-> (QACCEPTn === QREQN_RST && QDENY === 1'b0))
+    else fail("SVA_Q_RST", $sformatf("QACCEPTn=%b QDENY=%b during PRESETn (QREQN_RST=%b)", QACCEPTn, QDENY, QREQN_RST));
+
+  A_Q_ILLEGAL: assert property (disable iff (!PRESETn || !sva_en) !(QACCEPTn === 1'b0 && QDENY === 1'b1))
+    else fail("SVA_Q_ILLEGAL", "QACCEPTn = 0 together with QDENY = 1");
+
+  A_Q_ACCEPT: assert property (disable iff (!PRESETn || !sva_en) $fell(QACCEPTn) |-> (!QREQn && !$past(QDENY)))
+    else fail("SVA_Q_ACCEPT", "QACCEPTn fell outside Q_REQUEST");
+
+  A_Q_EXIT: assert property (disable iff (!PRESETn || !sva_en) $rose(QACCEPTn) |-> QREQn)
+    else fail("SVA_Q_EXIT", "QACCEPTn rose while QREQn = 0");
+
+  A_Q_DENY: assert property (disable iff (!PRESETn || !sva_en) $rose(QDENY) |-> (!QREQn && QACCEPTn))
+    else fail("SVA_Q_DENY", "QDENY rose outside Q_REQUEST");
+
+  A_Q_CONT: assert property (disable iff (!PRESETn || !sva_en) $fell(QDENY) |-> QREQn)
+    else fail("SVA_Q_CONT", "QDENY fell while QREQn = 0");
+
+  A_Q_IDLE: assert property (disable iff (!PRESETn || !sva_en)
+      $fell(QACCEPTn) |-> (!dma_req_o && !dma_end_ack_o && !debug_ctrl_active_o && !debug_tgt_active_o &&
+                           !debug_ctrl_hold_o && !debug_tgt_hold_o && !debug_bus_busy_o && !$past(PSEL && PENABLE)))
+    else fail("SVA_Q_IDLE", $sformatf("Q-Channel request accepted while active: dma_req=%b end_ack=%b ctrl=%b tgt=%b bus_busy=%b",
+                                      dma_req_o, dma_end_ack_o, debug_ctrl_active_o, debug_tgt_active_o, debug_bus_busy_o));
+
+  A_Q_NO_X: assert property (disable iff (!PRESETn || !sva_en) !$isunknown({QACCEPTn, QDENY, QACTIVE}))
+    else fail("SVA_Q_NO_X", "unknown value on QACCEPTn / QDENY / QACTIVE");
+
   // ---------------------------------------------------------------- functional cover
   C_CS_EN:   cover property (disable iff (!PRESETn) $rose(scl_cs_en_o));
   C_HS:      cover property (disable iff (!PRESETn) $rose(hs_mode_o));
@@ -194,6 +239,9 @@ module i2c_ip_sva (
   C_DMA_END_HS: cover property (disable iff (!PRESETn) dma_end_req_i && dma_end_ack_o);
   C_DMA_END_PULSE: cover property (disable iff (!PRESETn) $rose(dma_end_req_i) ##1 !dma_end_req_i);
   C_IRQ_ERR: cover property (disable iff (!PRESETn) $rose(irq_err_o));
+  C_Q_ACCEPT: cover property (disable iff (!PRESETn) $fell(QACCEPTn));
+  C_Q_DENY:   cover property (disable iff (!PRESETn) $rose(QDENY));
+  C_Q_WAIT:   cover property (disable iff (!PRESETn) PSEL && PENABLE && !PREADY);
 endmodule : i2c_ip_sva
 
 `endif

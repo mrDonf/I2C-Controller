@@ -53,7 +53,7 @@ package i2c_ip_ral_pkg;
 
     int unsigned fifo_depth = 16;
     bit [23:0]   devid_rst  = 24'h0;
-    bit [31:0]   version    = 32'h0002_0100;
+    bit [31:0]   version    = 32'h0002_0200;
 
     rand i2c_ip_reg CTRL, STATUS, INTR_STAT, INTR_EN, INTR_TEST, FIFO_CTRL, FIFO_STAT, CMD, CRXDATA, TTXDATA, TRXDATA;
     rand i2c_ip_reg TADDR, TCFG, HSCFG, CSTAT, TSTAT;
@@ -167,7 +167,7 @@ package i2c_ip_ral_pkg;
       PARAM   = mk("PARAM", 'h0F8);
       f = PARAM.add("FIFO_DEPTH", 0, 8, "RO", fifo_depth); f = PARAM.add("HS_SUP", 8, 1, "RO", 1);
       f = PARAM.add("DEVID_SUP", 9, 1, "RO", 1);           f = PARAM.add("DMA_SUP", 10, 1, "RO", 1);
-      f = PARAM.add("DMA_END_SUP", 11, 1, "RO", 1);
+      f = PARAM.add("DMA_END_SUP", 11, 1, "RO", 1);      f = PARAM.add("QCH_SUP", 12, 1, "RO", 1);
       VERSION = mk("VERSION", 'h0FC);    f = VERSION.add("VERSION", 0, 32, "RO", version);
 
       lock_model();

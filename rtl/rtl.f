@@ -6,4 +6,5 @@ i2c_bus_mon.sv
 i2c_ctrl.sv
 i2c_tgt.sv
 i2c_regs.sv
+i2c_qch.sv
 apb_i2c.sv

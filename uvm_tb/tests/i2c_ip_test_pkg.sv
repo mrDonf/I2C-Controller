@@ -4,7 +4,8 @@
 //   i2c_ip_base_test (i2c_ip_base_test.svh) builds the environment, initialises the DUT in the configure phase,
 //   runs the scenario of the test in the main phase and the end-of-test checks in the shutdown phase.
 //   Feature-group bases: i2c_reg_base_test, i2c_ctrl_base_test, i2c_tgt_base_test, i2c_bus_base_test,
-//   i2c_dma_base_test. Every test (one file per test under reg/ intr/ ctrl/ tgt/ bus/ dma/ rand/) is one item of
+//   i2c_dma_base_test, i2c_qch_base_test. Every test (one file per test under reg/ intr/ ctrl/ tgt/ bus/ dma/ rand/
+//   qch/) is one item of
 //   the verification plan (docs/vplan.md) and composes its own layer-1 / layer-2 sequences in run_scenario().
 // -----------------------------------------------------------------------------
 `ifndef I2C_IP_TEST_PKG_SV
@@ -19,6 +20,7 @@ package i2c_ip_test_pkg;
   import i2c_pkg::*;
   import i2c_dma_pkg::*;
   import i2c_bb_pkg::*;
+  import i2c_qch_pkg::*;
   import i2c_ip_ral_pkg::*;
   import i2c_ip_env_pkg::*;
   import i2c_ip_seq_pkg::*;
@@ -127,6 +129,17 @@ package i2c_ip_test_pkg;
   `include "rand/i2c_rand_tgt_test.svh"
   `include "rand/i2c_rand_stretch_test.svh"
   `include "rand/i2c_rand_reconfig_test.svh"
+
+  // Q-Channel (low power)
+  `include "qch/i2c_qch_base_test.svh"
+  `include "qch/i2c_qch_handshake_test.svh"
+  `include "qch/i2c_qch_deny_test.svh"
+  `include "qch/i2c_qch_apb_wake_test.svh"
+  `include "qch/i2c_qch_bus_wake_test.svh"
+  `include "qch/i2c_qch_ctrl_test.svh"
+  `include "qch/i2c_qch_dma_test.svh"
+  `include "qch/i2c_qch_reset_test.svh"
+  `include "qch/i2c_qch_rand_test.svh"
 endpackage : i2c_ip_test_pkg
 
 `endif

@@ -5,6 +5,7 @@
 //   i2c      : I2C VIP env, master agent (external controller) + slave agents (external targets 0x50, 0x51)
 //   dma      : DMAC agent (reactive responder on dma_req / dma_ack)
 //   bb       : bit-bang / fault-injection agent (second controller, glitches, stuck lines, misplaced S/P)
+//   qch      : Q-Channel agent = LPI clock controller model (QREQn, PCLK gate, automatic wake-up on QACTIVE)
 //   side_mon : sideband / debug port monitor
 //   ral      : register model + predictor (APB monitor -> mirror)
 //   sb       : spec reference model / scoreboard
@@ -19,6 +20,7 @@ class i2c_ip_env extends uvm_env;
   i2c_env             i2c;
   i2c_dma_agent       dma;
   i2c_bb_agent        bb;
+  i2c_qch_ctrl        qch;
   i2c_ip_side_monitor side_mon;
   i2c_ip_reg_block    ral;
   i2c_ip_reg_adapter  adapter;
@@ -49,6 +51,8 @@ class i2c_ip_env extends uvm_env;
     dma = i2c_dma_agent::type_id::create("dma", this);
     uvm_config_db #(i2c_bb_cfg)::set(this, "bb", "cfg", cfg.bb_cfg);
     bb = i2c_bb_agent::type_id::create("bb", this);
+    uvm_config_db #(i2c_qch_cfg)::set(this, "qch", "cfg", cfg.qch_cfg);
+    qch = i2c_qch_ctrl::type_id::create("qch", this);
 
     side_mon = i2c_ip_side_monitor::type_id::create("side_mon", this);
 
@@ -95,12 +99,14 @@ class i2c_ip_env extends uvm_env;
       sb.ap_msg.connect(cov.msg_imp);
       side_mon.ap.connect(cov.side_imp);
       dma.mon.ap.connect(cov.dma_imp);
+      qch.ap.connect(cov.qch_imp);
     end
 
     vsqr.apb_sqr     = apb.mst.sqr;
     vsqr.i2c_mst_sqr = i2c.mst.sqr;
     vsqr.bb_sqr      = bb.sqr;
     vsqr.dmac        = dma.drv;
+    vsqr.qch         = qch;
     vsqr.ral         = ral;
     vsqr.cfg         = cfg;
     vsqr.sb          = sb;

@@ -16,6 +16,8 @@
 //   target   : drain_trx, load_ttx, VIP master accessors (ext)
 //   bus      : wait_bus_free, wait_dut_idle, bb (bit-bang op), quiet / loud (checks off / on around protocol abuse),
 //              recover (bus clear), count_rises
+//   Q-Channel: qch_req / qch_expect / qch_stop (retry until accepted) / qch_exit / qch_auto / qch_wait_run,
+//              qch_wakes (wake-up counters), timed_xfer (APB access duration, stretched while stopped)
 //   compose  : run_seq (start a child sequence on the virtual sequencer)
 // -----------------------------------------------------------------------------
 class i2c_ip_base_vseq extends uvm_sequence;
@@ -503,6 +505,66 @@ class i2c_ip_base_vseq extends uvm_sequence;
   function void chk_dma_log(i2c_dma_op o, string exp, string what);
     chk(o.log == exp, $sformatf("%s request sequence \"%s\", spec 4.9.4 \"%s\"", what, o.log, exp));
   endfunction
+
+  // ================================================================ Q-Channel (3.6, 4.12, 6.17)
+  task qch_req(output qch_resp_e r, input bit gate_clk = 1'b1);
+    p_sequencer.qch.request(r, gate_clk);
+  endtask
+
+  task qch_expect(qch_resp_e exp, string what = "", bit gate_clk = 1'b1);
+    qch_resp_e r;
+    qch_req(r, gate_clk);
+    chk(r == exp, $sformatf("%s Q-Channel request: %s, expected %s", what, r.name(), exp.name()));
+  endtask
+
+  // request until accepted (the IP denies while it is active and needs a few idle cycles, spec 4.12)
+  task qch_stop(string what = "", realtime tmo = 2ms, realtime gap = 2us);
+    qch_resp_e r;
+    realtime t0 = $realtime;
+    forever begin
+      p_sequencer.qch.wait_run();
+      qch_req(r);
+      if (r == QCH_ACCEPT) break;
+      if ($realtime - t0 > tmo) begin
+        n_fail++; `uvm_error("VSEQ_QCH", $sformatf("%s Q-Channel request never accepted within %0t", what, tmo)) break;
+      end
+      #(gap);
+    end
+  endtask
+
+  task qch_exit();
+    p_sequencer.qch.exit();
+  endtask
+
+  task qch_wait_run(realtime tmo = 100us);
+    p_sequencer.qch.wait_run(tmo);
+  endtask
+
+  function void qch_auto(bit on, int unsigned lat_min = 0, int unsigned lat_max = 4);
+    cfg.qch_cfg.auto_wake    = on;
+    cfg.qch_cfg.wake_lat_min = lat_min;
+    cfg.qch_cfg.wake_lat_max = lat_max;
+  endfunction
+
+  function bit qch_stopped();
+    return p_sequencer.qch.stopped();
+  endfunction
+
+  function int unsigned qch_wakes(qch_wake_e w);
+    return p_sequencer.qch.n_wake.exists(w) ? p_sequencer.qch.n_wake[w] : 0;
+  endfunction
+
+  // QACCEPTn / QDENY / QACTIVE as seen on the pins
+  function bit [2:0] qch_pins();
+    return {cfg.qch_cfg.vif.qacceptn, cfg.qch_cfg.vif.qdeny, cfg.qch_cfg.vif.qactive};
+  endfunction
+
+  // APB access with its duration in PCLK periods (setup + access + wait states)
+  task timed_xfer(bit write, bit [11:0] a, ref bit [31:0] d, output bit err, output int unsigned cyc);
+    realtime t0 = $realtime;
+    apb_xfer(write, a, d, 4'hF, err);
+    cyc = int'(($realtime - t0) / (T * 1ns));
+  endtask
 
   // ================================================================ misc
   task wait_cycles(int unsigned n);

@@ -12,7 +12,7 @@ module i2c_regs
 #(
   parameter int          FIFO_DEPTH = 16,
   parameter logic [23:0] DEVID_RST  = 24'h000000,
-  parameter logic [31:0] VERSION    = 32'h0002_0100
+  parameter logic [31:0] VERSION    = 32'h0002_0200
 ) (
   input  logic             PCLK,
   input  logic             PRESETn,
@@ -654,7 +654,7 @@ module i2c_regs
         A_DMA_CTRL:  PRDATA = {26'd0, r_dma_sel, 1'b0, r_dma_end_en, r_dma_pfc, r_dma_en};
         A_DMA_BLK:   PRDATA = {26'd0, r_dma_blk};
         A_DMA_STAT:  PRDATA = {7'd0, r_dma_end, 7'd0, r_dma_deny, 7'd0, r_dma_done, 6'd0, dma_busy, dma_req};
-        A_PARAM:     PRDATA = {20'd0, 4'b1111, 8'(FIFO_DEPTH)};   // DMA_END, DMA, DEVID, HS
+        A_PARAM:     PRDATA = {19'd0, 5'b11111, 8'(FIFO_DEPTH)};  // QCH, DMA_END, DMA, DEVID, HS
         A_VERSION:   PRDATA = VERSION;
         default:     PRDATA = 32'd0;     // WO / unmapped
       endcase

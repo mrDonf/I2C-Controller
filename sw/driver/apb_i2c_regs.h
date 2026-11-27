@@ -253,6 +253,7 @@
 #define I2C_PARAM_DEVID_SUP      (1u << 9)
 #define I2C_PARAM_DMA_SUP        (1u << 10)
 #define I2C_PARAM_DMA_END_SUP    (1u << 11)
+#define I2C_PARAM_QCH_SUP        (1u << 12)   /* Arm LPI Q-Channel (v2.2.0, spec 3.8) */
 #define I2C_VERSION_MAJOR(v)     (((v) >> 16) & 0xFFFFu)
 #define I2C_VERSION_MINOR(v)     (((v) >> 8) & 0xFFu)
 

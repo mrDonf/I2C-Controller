@@ -10,11 +10,14 @@
 //   cg_dma_ev  DMA channel events (4.9.6, 4.9.7): end handshake (4-phase / pulse) x DMA_CTRL.END_EN x request pending,
 //              request withdrawn by DMA_CTRL.CLR, late ack
 //   cg_apb     register accesses: offset class x direction x PSLVERR x strobes (3.6, 3.7)
+//   cg_qch     Q-Channel (3.8, 4.12): response x IP activity at the request, QACTIVE at the request, wake source,
+//              stopped duration, APB access stretched while stopped
 // -----------------------------------------------------------------------------
 `uvm_analysis_imp_decl(_cov_apb)
 `uvm_analysis_imp_decl(_cov_msg)
 `uvm_analysis_imp_decl(_cov_side)
 `uvm_analysis_imp_decl(_cov_dma)
+`uvm_analysis_imp_decl(_cov_qch)
 
 class i2c_ip_coverage extends uvm_component;
   `uvm_component_utils(i2c_ip_coverage)
@@ -23,6 +26,7 @@ class i2c_ip_coverage extends uvm_component;
   uvm_analysis_imp_cov_msg  #(i2c_ip_msg_info, i2c_ip_coverage)  msg_imp;
   uvm_analysis_imp_cov_side #(i2c_ip_side_item, i2c_ip_coverage) side_imp;
   uvm_analysis_imp_cov_dma  #(i2c_dma_item, i2c_ip_coverage)     dma_imp;
+  uvm_analysis_imp_cov_qch  #(i2c_qch_item, i2c_ip_coverage)     qch_imp;
 
   i2c_ip_env_cfg cfg;
   side_vif_t     side_vif;
@@ -42,6 +46,8 @@ class i2c_ip_coverage extends uvm_component;
   bit              apb_wr, apb_err;
   bit [3:0]        apb_strb;
   int unsigned     fifo_depth;
+  i2c_qch_item     qh;
+  bit              qch_en;          // CTRL.EN mirrored from the APB writes
 
   covergroup cg_cmd;
     option.per_instance = 1;
@@ -159,6 +165,29 @@ class i2c_ip_coverage extends uvm_component;
     }
   endgroup
 
+  covergroup cg_qch_req;
+    option.per_instance = 1;
+    cp_resp : coverpoint qh.resp;
+    cp_ctx  : coverpoint qh.ctx {
+      bins idle = {0}; bins bus_busy = {4'b0001}; bins ctrl_active = {4'b0011, 4'b0010};
+      bins tgt_active = {4'b0101, 4'b0100}; bins dma_req = {[4'b1000:4'b1111]};
+    }
+    cp_qact : coverpoint qh.qactive_at_req;
+    cp_en   : coverpoint qch_en;
+    x_resp_ctx : cross cp_resp, cp_ctx {
+      ignore_bins busy_accept = binsof(cp_resp) intersect {QCH_ACCEPT} && !binsof(cp_ctx.idle);   // checked: never
+    }
+    x_resp_en : cross cp_resp, cp_en;
+  endgroup
+
+  covergroup cg_qch_exit;
+    option.per_instance = 1;
+    cp_wake : coverpoint qh.wake { bins ctrl = {QW_CTRL}; bins apb = {QW_APB}; bins bus = {QW_BUS};
+                                   bins dma_end = {QW_DMA_END}; ignore_bins other = {QW_DMA_REQ, QW_OTHER}; }
+    cp_stop : coverpoint qh.stop_cyc { bins stop_short = {[0:15]}; bins stop_mid = {[16:1000]}; bins stop_long = {[1001:$]}; }
+    cp_lat  : coverpoint qh.wake_lat iff (qh.wake != QW_CTRL) { bins lat0 = {0}; bins lat_1_8 = {[1:8]}; bins lat_gt8 = {[9:$]}; }
+  endgroup
+
   covergroup cg_depth;
     option.per_instance = 1;
     cp_depth : coverpoint fifo_depth { bins d4 = {4}; bins d8 = {8}; bins d16 = {16}; bins d32 = {32}; }
@@ -168,6 +197,7 @@ class i2c_ip_coverage extends uvm_component;
     super.new(name, parent);
     cg_cmd = new(); cg_ctrl = new(); cg_tgt = new(); cg_trx = new(); cg_crx = new();
     cg_intr = new(); cg_dma = new(); cg_dma_ev = new(); cg_apb = new(); cg_depth = new();
+    cg_qch_req = new(); cg_qch_exit = new();
   endfunction
 
   function void build_phase(uvm_phase phase);
@@ -176,6 +206,7 @@ class i2c_ip_coverage extends uvm_component;
     msg_imp  = new("msg_imp", this);
     side_imp = new("side_imp", this);
     dma_imp  = new("dma_imp", this);
+    qch_imp  = new("qch_imp", this);
   endfunction
 
   function void start_of_simulation_phase(uvm_phase phase);
@@ -188,6 +219,8 @@ class i2c_ip_coverage extends uvm_component;
     cg_apb.sample();
     if (t.slverr) return;
     if (t.write && off == R_DMA_CTRL && t.strb[0] && !cfg.dma_cfg.vif.hs_busy) dma_end_en = t.data[2];
+    if (t.write && off == R_CTRL && t.strb[3] && t.data[31]) qch_en = 0;
+    else if (t.write && off == R_CTRL && t.strb[0]) qch_en = t.data[0];
     if (t.write && off == R_CMD && t.strb != 0) begin cmd = t.strobed_data(); cg_cmd.sample(); end
     if (!t.write && off == R_TRXDATA) begin trx_tag = t.data[9:8]; cg_trx.sample(); end
     if (!t.write && off == R_CRXDATA) begin crx_last = t.data[8]; cg_crx.sample(); end
@@ -206,6 +239,12 @@ class i2c_ip_coverage extends uvm_component;
     if (t.kind != SIDE_INTR) return;
     intr_bit = t.idx;
     cg_intr.sample();
+  endfunction
+
+  function void write_cov_qch(i2c_qch_item t);
+    qh = t;
+    if (t.kind == QCH_EV_REQ) cg_qch_req.sample();
+    else                      cg_qch_exit.sample();
   endfunction
 
   function void write_cov_dma(i2c_dma_item t);

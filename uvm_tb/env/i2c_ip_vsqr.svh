@@ -8,6 +8,7 @@ class i2c_ip_vsqr extends uvm_sequencer;
   i2c_sequencer       i2c_mst_sqr;   // VIP I2C master (external controller)
   i2c_bb_sequencer    bb_sqr;        // bit-bang / fault injection
   i2c_dmac_driver     dmac;          // DMAC model (operations are programmed directly)
+  i2c_qch_ctrl        qch;           // LPI clock controller model (Q-Channel, called directly)
   i2c_ip_reg_block    ral;
   i2c_ip_env_cfg      cfg;
   i2c_ip_scoreboard   sb;

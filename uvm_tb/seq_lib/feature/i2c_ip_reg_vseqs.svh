@@ -41,7 +41,7 @@ class i2c_reg_reset_val_vseq extends i2c_ip_base_vseq;
     chk_rd(R_BUSIDLE,   32'h0000_03E8, '1, "BUSIDLE");
     chk_rd(R_DEVID,     32'(cfg.p.devid_rst), '1, "DEVID");
     chk_rd(R_BUSMON,    32'h0000_0603, '1, "BUSMON");
-    chk_rd(R_PARAM,     32'h0000_0F00 | depth, '1, "PARAM");
+    chk_rd(R_PARAM,     32'h0000_1F00 | depth, '1, "PARAM");
     chk_rd(R_VERSION,   cfg.p.version, '1, "VERSION");
   endtask
 endclass : i2c_reg_reset_val_vseq
